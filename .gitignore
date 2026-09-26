@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Visual Studio / C++
+.vs/
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+*.user
+*.suo
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.asi
+
+# Секрети та ключі — ніколи не комітити
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+.env
+secrets.*
+
+# Ігрові файли та робочі артефакти
+*.ymt
+*.rpf
+weapons_reloaded.*
+weapons_reload_report.csv
+DynamicReloadSpeed.generated.ini
+*.log
