@@ -37,3 +37,7 @@ weapons_reloaded.*
 weapons_reload_report.csv
 DynamicReloadSpeed.generated.ini
 *.log
+
+# Артефакти прогону препроцесора
+DynamicReloadSpeed.unhashed.ini
+weapons_reload_unhashed.csv
