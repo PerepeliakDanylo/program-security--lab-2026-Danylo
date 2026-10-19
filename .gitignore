@@ -20,6 +20,10 @@ x64/
 *.lib
 *.dll
 *.asi
+inc/
+lib/
+build/
+package/
 
 # Секрети та ключі — ніколи не комітити
 *.pem
