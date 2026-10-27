@@ -35,6 +35,18 @@ bool closeEnough(float a, float b, float epsilon)
     return std::fabs(a - b) <= epsilon;
 }
 
+// A bound structure is only written while the name hash it was found by is still
+// where we found it. If the game freed or moved the object, that dword now holds
+// something else and the address belongs to unrelated data: writing there would
+// corrupt the game. One guarded 4-byte read, checked before every write and
+// every restore.
+bool ownerStillThere(const std::uint8_t* nameAddress, std::uint32_t hash)
+{
+    std::uint32_t current = 0u;
+    return nameAddress != nullptr && MemScan::readDword(nameAddress, current) &&
+           current == hash;
+}
+
 } // namespace
 
 std::size_t WeaponPatcher::readableSpanFrom(const std::uint8_t* address, std::size_t cap)
@@ -363,14 +375,14 @@ bool WeaponPatcher::discoverAll(const Config& config)
         return false;
     }
 
-    auto toCandidates = [span](const ScanResult& result) {
+    auto toCandidates = [this, span](const ScanResult& result) {
         std::vector<Candidate> list;
         list.reserve(result.hits.size());
         for (std::uint8_t* hit : result.hits)
         {
             Candidate candidate;
             candidate.address      = hit;
-            candidate.readableSpan = readableSpanFrom(hit, span);
+            candidate.readableSpan = m_scan.spanFromRegions(hit, span);
             if (candidate.readableSpan >= 8u)
             {
                 list.push_back(candidate);
@@ -435,27 +447,98 @@ bool WeaponPatcher::discoverAll(const Config& config)
     // silently pick the wrong candidate for every weapon.
     bool animMatchedCalmValues = false;
 
+    // Count, at a given offset, how many weapons have a candidate whose value
+    // EXACTLY matches the value expected for that specific weapon. This is what
+    // tells a real field from a spurious one: the CALM value set is high-entropy
+    // (0.50, 0.45, 0.36, 0.59, ...), so a wrong offset cannot reproduce it, while
+    // the stock set is only 1.00/1.30 and a field of unrelated ~1.0 floats can
+    // match it by accident (the 0x06FC trap in the first in-game log, which is
+    // why a manual ForceAnimReloadRateOffset was needed on 1.0).
+    const DefaultsSettings& animDefaults = config.defaults();
+    auto exactHitsAt = [&](const std::vector<float>& expected, std::uint32_t offset) -> int {
+        int hits = 0;
+        for (std::size_t i = 0; i < m_weaponCandidates.size(); ++i)
+        {
+            const float want = (i < expected.size()) ? expected[i] : 0.0f;
+            if (want <= 0.0f)
+            {
+                continue;
+            }
+            for (const Candidate& candidate : m_weaponCandidates[i])
+            {
+                if (candidate.readableSpan < static_cast<std::size_t>(offset) + 4u)
+                {
+                    continue;
+                }
+                float value = 0.0f;
+                if (!MemScan::readFloat(candidate.address + offset, value))
+                {
+                    continue;
+                }
+                if (closeEnough(value, want, animDefaults.vanillaEpsilon))
+                {
+                    ++hits;
+                    break;
+                }
+            }
+        }
+        return hits;
+    };
+
     if (memory.forceAnimOffset >= 0)
     {
         m_animDiscovery               = DiscoveryResult();
         m_animDiscovery.ok            = true;
         m_animDiscovery.offset        = static_cast<std::uint32_t>(memory.forceAnimOffset);
         m_animDiscovery.signatureUsed = "forced by config";
-        DRS_INFO("resolver: AnimReloadRate offset pinned to 0x%04X by [Memory]",
-                 m_animDiscovery.offset);
+        // Even with a pinned offset, decide which value set actually lives there,
+        // so binding picks the right candidate per weapon. 1.0 always bound
+        // against the STOCK set here, although a slowed weapons.ymt puts the CALM
+        // values at the real offset - so the wrong structure could be bound.
+        const int vHits = exactHitsAt(vanillaAnim, m_animDiscovery.offset);
+        const int cHits = exactHitsAt(calmAnim, m_animDiscovery.offset);
+        animMatchedCalmValues = (cHits > vHits);
+        DRS_INFO("resolver: AnimReloadRate offset pinned to 0x%04X by [Memory] "
+                 "(stock hits=%d, calm hits=%d -> bind against %s)",
+                 m_animDiscovery.offset, vHits, cHits,
+                 animMatchedCalmValues ? "calm" : "stock");
     }
     else
     {
-        m_animDiscovery = discoverOffset("AnimReloadRate", m_weaponCandidates,
-                                         vanillaAnim, "stock", config);
-        if (!m_animDiscovery.ok)
+        // Run BOTH passes and keep the stronger one (D-4). On a slowed
+        // weapons.ymt the calm pass wins with many exact hits; on a clean install
+        // the CALM values are not in memory, the calm pass finds nothing and the
+        // stock pass wins. Both deployments resolve without a forced offset.
+        const DiscoveryResult stockPass = discoverOffset("AnimReloadRate", m_weaponCandidates,
+                                                         vanillaAnim, "stock", config);
+        const DiscoveryResult calmPass  = discoverOffset("AnimReloadRate", m_weaponCandidates,
+                                                         calmAnim, "calm profile", config);
+        if (stockPass.ok && calmPass.ok)
         {
-            DRS_INFO("resolver: retrying AnimReloadRate against the CALM values from the "
-                     "config - this is what a player with a slowed weapons.ymt needs");
-            m_animDiscovery = discoverOffset("AnimReloadRate", m_weaponCandidates,
-                                             calmAnim, "calm profile", config);
-            animMatchedCalmValues = m_animDiscovery.ok;
+            // A tie goes to calm: its signature is higher-entropy, so an equal
+            // hit count is stronger evidence for it than for stock.
+            animMatchedCalmValues = (calmPass.signatureHits >= stockPass.signatureHits);
         }
+        else if (calmPass.ok)
+        {
+            animMatchedCalmValues = true;
+        }
+        else if (stockPass.ok)
+        {
+            animMatchedCalmValues = false;
+        }
+        else
+        {
+            animMatchedCalmValues = (calmPass.signatureHits > stockPass.signatureHits);
+        }
+
+        m_animDiscovery = animMatchedCalmValues ? calmPass : stockPass;
+
+        DRS_INFO("resolver: AnimReloadRate chose the %s pass "
+                 "(stock: ok=%d sig=%d off=0x%04X | calm: ok=%d sig=%d off=0x%04X)",
+                 animMatchedCalmValues ? "calm" : "stock",
+                 stockPass.ok ? 1 : 0, stockPass.signatureHits, stockPass.offset,
+                 calmPass.ok ? 1 : 0, calmPass.signatureHits, calmPass.offset);
     }
 
     if (!m_animDiscovery.ok)
@@ -468,13 +551,61 @@ bool WeaponPatcher::discoverAll(const Config& config)
     bindAddresses(m_weaponCandidates,
                   animMatchedCalmValues ? calmAnim : vanillaAnim,
                   m_animDiscovery.offset, chosen, config);
+    // Every binding is either CONFIRMED (the value at the offset equals the value
+    // this weapon is expected to have) or PLAUSIBLE ONLY (no expected value is
+    // known - the five weapons absent from weapons.ymt - or none matched, so the
+    // first candidate with a sane float was taken). A plausible-only binding is
+    // kept only if its value looks like a reload rate at all; otherwise it is
+    // dropped rather than risk writing into an unrelated structure. Each decision
+    // is logged, so a player's log shows exactly which weapons are certain.
+    const std::vector<float>& expectedAnim = animMatchedCalmValues ? calmAnim : vanillaAnim;
+    constexpr float kPlausibleRateMin = 0.10f;   // slowest shipped CALM preset is 0.21
+    constexpr float kPlausibleRateMax = 3.00f;   // stock tops out at 1.30
+    int confirmed     = 0;
+    int plausibleOnly = 0;
+    int dropped       = 0;
     for (std::size_t i = 0; i < m_weapons.size(); ++i)
     {
-        m_weapons[i].nameAddress  = chosen[i];
-        m_weapons[i].inMainModule = MemScan::isInsideMainModule(chosen[i]);
-        m_weapons[i].anim.address =
+        WeaponTarget& target = m_weapons[i];
+        target.nameAddress  = chosen[i];
+        target.inMainModule = MemScan::isInsideMainModule(chosen[i]);
+        target.anim.address =
             (chosen[i] != nullptr) ? chosen[i] + m_animDiscovery.offset : nullptr;
+
+        if (target.anim.address == nullptr)
+        {
+            if (!m_weaponCandidates[i].empty())
+            {
+                DRS_INFO("resolver: %s hash present, but no candidate has a plausible "
+                         "value at the offset - not patched", target.name.c_str());
+            }
+            continue;
+        }
+
+        float value = 0.0f;
+        const bool  readable = MemScan::readFloat(target.anim.address, value);
+        const float want     = (i < expectedAnim.size()) ? expectedAnim[i] : 0.0f;
+        if (readable && want > 0.0f && closeEnough(value, want, animDefaults.vanillaEpsilon))
+        {
+            ++confirmed;
+            continue;
+        }
+        if (readable && std::isfinite(value) &&
+            value >= kPlausibleRateMin && value <= kPlausibleRateMax)
+        {
+            ++plausibleOnly;
+            DRS_INFO("resolver: %s bound by plausibility only (value %.4f, no exact "
+                     "reference) - verify its reload in game", target.name.c_str(), value);
+            continue;
+        }
+        ++dropped;
+        DRS_INFO("resolver: %s dropped - value %.4f at the offset does not look like a "
+                 "reload rate", target.name.c_str(), readable ? value : 0.0f);
+        target.nameAddress  = nullptr;
+        target.anim.address = nullptr;
     }
+    DRS_INFO("resolver: AnimReloadRate bindings: %d confirmed, %d plausible only, %d dropped",
+             confirmed, plausibleOnly, dropped);
 
     // --- LoopRate and TimeBetweenBulletsInLoop ------------------------------
     std::vector<float> vanillaLoop;
@@ -783,8 +914,19 @@ bool WeaponPatcher::writeField(FieldTarget& field, float value, const char* what
         DRS_DEBUG("%s: snapshot compare ok", what);
     }
 
+    // FR-37: change page protection only if the page is NOT writable. The RAGE
+    // heap is already read-write, so in practice no change is made. 1.0 called
+    // VirtualProtect twice per field unconditionally (and asked for an EXECUTE
+    // right data never needs): 44 system calls per state change on the game's
+    // main thread, felt as a hitch on every CALM/COMBAT switch. When a change is
+    // needed, it is PAGE_READWRITE - never executable - and it is restored.
     DWORD previousProtect = 0;
-    if (!VirtualProtect(field.address, sizeof(float), PAGE_EXECUTE_READWRITE, &previousProtect))
+    bool  protectChanged  = false;
+    if (MemScan::isWritable(field.address, sizeof(float)))
+    {
+        DRS_DEBUG("%s: page already writable, protection left untouched", what);
+    }
+    else
     {
         if (!VirtualProtect(field.address, sizeof(float), PAGE_READWRITE, &previousProtect))
         {
@@ -792,14 +934,18 @@ bool WeaponPatcher::writeField(FieldTarget& field, float value, const char* what
             DRS_ERROR("%s: could not make the page writable, target dropped", what);
             return false;
         }
+        protectChanged = true;
+        DRS_DEBUG("%s: protect changed", what);
     }
-    DRS_DEBUG("%s: protect changed", what);
 
     const bool written = MemScan::writeFloat(field.address, clamped);
 
-    DWORD restored = 0;
-    VirtualProtect(field.address, sizeof(float), previousProtect, &restored);
-    DRS_DEBUG("%s: protect restored", what);
+    if (protectChanged)
+    {
+        DWORD restored = 0;
+        VirtualProtect(field.address, sizeof(float), previousProtect, &restored);
+        DRS_DEBUG("%s: protect restored", what);
+    }
 
     if (!written)
     {
@@ -837,17 +983,24 @@ bool WeaponPatcher::restoreField(FieldTarget& field, const char* what)
     }
 
     DWORD previousProtect = 0;
-    if (!VirtualProtect(field.address, sizeof(float), PAGE_EXECUTE_READWRITE, &previousProtect) &&
-        !VirtualProtect(field.address, sizeof(float), PAGE_READWRITE, &previousProtect))
+    bool  protectChanged  = false;
+    if (!MemScan::isWritable(field.address, sizeof(float)))
     {
-        DRS_ERROR("restore skipped: %s (page not writable)", what);
-        return false;
+        if (!VirtualProtect(field.address, sizeof(float), PAGE_READWRITE, &previousProtect))
+        {
+            DRS_ERROR("restore skipped: %s (page not writable)", what);
+            return false;
+        }
+        protectChanged = true;
     }
 
     const bool written = MemScan::writeFloat(field.address, field.snapshot);
 
-    DWORD restored = 0;
-    VirtualProtect(field.address, sizeof(float), previousProtect, &restored);
+    if (protectChanged)
+    {
+        DWORD restored = 0;
+        VirtualProtect(field.address, sizeof(float), previousProtect, &restored);
+    }
 
     if (!written)
     {
@@ -866,6 +1019,7 @@ void WeaponPatcher::applyProfile(bool combat, const Config& config)
     {
         return;
     }
+    const ULONGLONG applyStart = GetTickCount64();
 
     const DefaultsSettings& defaults = config.defaults();
     const ProfileSettings&  profiles = config.profiles();
@@ -878,6 +1032,15 @@ void WeaponPatcher::applyProfile(bool combat, const Config& config)
     {
         if (target.anim.address == nullptr || target.anim.unpatchable)
         {
+            continue;
+        }
+        if (!ownerStillThere(target.nameAddress, target.hash))
+        {
+            target.anim.unpatchable = true;
+            DRS_ERROR("%s: the weapon structure is no longer where it was found "
+                      "(name hash changed); target dropped for this session",
+                      target.name.c_str());
+            ++skipped;
             continue;
         }
 
@@ -944,6 +1107,18 @@ void WeaponPatcher::applyProfile(bool combat, const Config& config)
 
     for (ProfileTarget& profile : m_profiles)
     {
+        if (profile.nameAddress != nullptr && !ownerStillThere(profile.nameAddress, profile.hash))
+        {
+            for (int c = 0; c < profile.conditions; ++c)
+            {
+                profile.loop[c].unpatchable = true;
+                profile.time[c].unpatchable = true;
+            }
+            DRS_ERROR("%s: the sectioned-reload structure is no longer where it was "
+                      "found; dropped for this session", profile.name.c_str());
+            continue;
+        }
+
         const ConditionReference* reference = profile.reference;
 
         for (int c = 0; c < profile.conditions; ++c)
@@ -1025,8 +1200,9 @@ void WeaponPatcher::applyProfile(bool combat, const Config& config)
         }
     }
 
-    DRS_INFO("%s applied: %d fields written, %d skipped",
-             combat ? "COMBAT" : "CALM", written, skipped);
+    DRS_INFO("%s applied: %d fields written, %d skipped, %llu ms",
+             combat ? "COMBAT" : "CALM", written, skipped,
+             static_cast<unsigned long long>(GetTickCount64() - applyStart));
 }
 
 void WeaponPatcher::restoreAll()
@@ -1038,6 +1214,12 @@ void WeaponPatcher::restoreAll()
     {
         _snprintf_s(label, sizeof(label), _TRUNCATE, "%s AnimReloadRate",
                     target.name.c_str());
+        if (target.anim.address != nullptr && target.anim.firstWriteDone &&
+            !ownerStillThere(target.nameAddress, target.hash))
+        {
+            DRS_ERROR("restore skipped: %s (structure moved)", label);
+            continue;
+        }
         if (restoreField(target.anim, label))
         {
             ++restored;

@@ -79,6 +79,18 @@ public:
     // built by the RAGE parser on the heap. See DESIGN.md 3.3 and SR-09.
     static bool isAcceptableTarget(const void* address, std::size_t bytes) noexcept;
 
+    // True when the range is committed and its page is ALREADY writable. The RAGE
+    // heap that holds CWeaponInfo is plain read-write memory, so in practice this
+    // is always true and no protection change is needed (FR-37: protection is
+    // changed only if the page is not writable).
+    static bool isWritable(const void* address, std::size_t bytes) noexcept;
+
+    // Readable span from `address` to the end of the scanned region that contains
+    // it, capped at `cap`. Uses the region list built by buildRegionList(), so it
+    // costs a binary search instead of one VirtualQuery system call per candidate
+    // (the 1.0 log showed ~8 s spent in thousands of those calls after the scan).
+    std::size_t spanFromRegions(const std::uint8_t* address, std::size_t cap) const noexcept;
+
 private:
     std::vector<MemoryRegion> m_regions;
     std::uint64_t             m_scannableBytes = 0;

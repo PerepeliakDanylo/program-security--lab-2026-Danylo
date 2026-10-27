@@ -43,6 +43,10 @@ void initialise();
 // scriptWait. The only place the plugin yields.
 void waitTicks(std::uint32_t milliseconds);
 
+// True once the loading screen is gone and the screen has faded in. Used only to
+// decide when to start the one-off memory scan (Script::waitForGameplay).
+bool isGameplayReady();
+
 // The game's build number is deliberately NOT here. It comes from the running
 // executable's own version resource, in GameBuild.h, and not from the SDK —
 // see the header comment there for why the SDK's getGameVersion() cannot

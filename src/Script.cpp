@@ -17,9 +17,18 @@ namespace drs {
 
 namespace {
 
-constexpr const char* kPluginVersion   = "1.0.0";
-constexpr int         kMaxTickErrors   = 10;
-constexpr std::uint32_t kInitDelayMs   = 8000;   // let the game finish loading weapon data
+constexpr const char*   kPluginVersion  = "1.1.0";
+constexpr int           kMaxTickErrors  = 10;
+
+// Start-up timing (1.1). Weapon data is parsed at game boot, long before any
+// script runs, so there is nothing to "wait for" in that sense. What we wait for
+// is the hand-off from the loading screen: the scan starts only once the world is
+// on screen, plus a short settle delay, so it does not compete with the burst of
+// streaming right after loading. 1.0 waited a blind 8 s from script start.
+constexpr std::uint64_t kSettleDelayMs  = 5000;
+constexpr std::uint64_t kReadyTimeoutMs = 120000;   // never wait forever
+
+constexpr const char*   kScanLabel      = "SCANNING";
 
 } // namespace
 
@@ -45,11 +54,19 @@ Script& Script::instance()
 
 void Script::onKeyDown(int virtualKey)
 {
-    // Input thread. Set a flag and return: nothing here may touch the game.
+    // Input thread. Compare against the published atomic copies and set a flag:
+    // nothing here may touch the game or the Config object.
+    if (virtualKey == m_hotkeyToggle.load())       { m_requestToggle.store(true); }
+    if (virtualKey == m_hotkeyForceCombat.load())  { m_requestForceCombat.store(true); }
+    if (virtualKey == m_hotkeyReloadConfig.load()) { m_requestReloadConfig.store(true); }
+}
+
+void Script::publishHotkeys()
+{
     const DebugSettings& debug = m_config.debug();
-    if (virtualKey == debug.hotkeyToggleMod)    { m_requestToggle.store(true); }
-    if (virtualKey == debug.hotkeyForceCombat)  { m_requestForceCombat.store(true); }
-    if (virtualKey == debug.hotkeyReloadConfig) { m_requestReloadConfig.store(true); }
+    m_hotkeyToggle.store(debug.hotkeyToggleMod);
+    m_hotkeyForceCombat.store(debug.hotkeyForceCombat);
+    m_hotkeyReloadConfig.store(debug.hotkeyReloadConfig);
 }
 
 void Script::disablePermanently(const char* reason)
@@ -116,6 +133,48 @@ bool Script::versionGatePasses()
     return false;
 }
 
+void Script::waitForGameplay()
+{
+    const std::uint64_t started  = GetTickCount64();
+    bool                timedOut = false;
+
+    // Phase 1: the loading screen is gone and the screen has faded in. Drawn as
+    // INIT every frame so a player with OnScreenState = 1 sees the mod is alive.
+    while (!game::isGameplayReady())
+    {
+        if (GetTickCount64() - started >= kReadyTimeoutMs)
+        {
+            timedOut = true;
+            break;
+        }
+        Overlay::instance().update(modStateName(ModState::Initialising), 0, -1,
+                                   kPluginVersion);
+        game::waitTicks(0);
+    }
+
+    if (timedOut)
+    {
+        DRS_INFO("start-up: the game did not report the world on screen within %llu s; "
+                 "continuing anyway",
+                 static_cast<unsigned long long>(kReadyTimeoutMs / 1000));
+    }
+    else
+    {
+        DRS_INFO("start-up: world on screen after %llu ms, settling %llu ms before the scan",
+                 static_cast<unsigned long long>(GetTickCount64() - started),
+                 static_cast<unsigned long long>(kSettleDelayMs));
+    }
+
+    // Phase 2: settle.
+    const std::uint64_t settleStart = GetTickCount64();
+    while (GetTickCount64() - settleStart < kSettleDelayMs)
+    {
+        Overlay::instance().update(modStateName(ModState::Initialising), 0, -1,
+                                   kPluginVersion);
+        game::waitTicks(0);
+    }
+}
+
 bool Script::initialise()
 {
     // 1. Open the log on built-in defaults FIRST. Reading the config produces log
@@ -131,12 +190,17 @@ bool Script::initialise()
     Logger::instance().configure(m_config.debug().logFile,
                                  m_config.debug().logLevel,
                                  m_config.debug().maxLogSizeMb);
+    publishHotkeys();
 
     DRS_INFO("config: %s, %d warning(s), %zu weapon sections",
              m_config.loadedFromFile() ? "loaded from file" : "built-in defaults",
              m_config.warningCount(), m_config.weapons().size());
 
     game::initialise();
+
+    // Configured this early so the overlay can show INIT / SCANNING while the
+    // mod starts up instead of appearing out of nowhere 15 s later.
+    Overlay::instance().configure(m_config);
 
     if (!m_config.general().enabled)
     {
@@ -157,9 +221,8 @@ bool Script::initialise()
                  "single player and relies on the player not using it online");
     }
 
-    // 3. Give the game time to parse weapons.ymt before looking for the result.
-    DRS_INFO("waiting %u ms for the game to finish loading weapon data", kInitDelayMs);
-    game::waitTicks(kInitDelayMs);
+    // 3. Start the scan only once the world is on screen (see kSettleDelayMs).
+    waitForGameplay();
 
     if (!runResolver())
     {
@@ -172,7 +235,6 @@ bool Script::initialise()
     }
 
     m_detector.configure(m_config);
-    Overlay::instance().configure(m_config);
 
     m_state          = ModState::Calm;
     m_stateEnteredMs = GetTickCount64();
@@ -183,8 +245,8 @@ bool Script::initialise()
 bool Script::runResolver()
 {
     // See the threading note in Script.h. While the worker runs, this fiber does
-    // nothing but yield, so nobody else logs or touches m_patcher/m_config
-    // concurrently; the keyboard handler only sets atomic flags.
+    // nothing but yield and draw the overlay, so nobody else logs or touches
+    // m_patcher/m_config concurrently; the keyboard handler only sets atomic flags.
     //
     // The shared state lives on the heap and the thread is detached: if
     // ScriptHook ever tears this fiber down mid-wait, the worker must not write
@@ -203,7 +265,11 @@ bool Script::runResolver()
     try
     {
         std::thread([this, job]() {
-            // Below normal: the game's own threads always win the CPU.
+            // Below normal, not idle. The game's own threads always win the CPU,
+            // and the scan also yields cooperatively every few MB (MemScan), so it
+            // does not saturate memory bandwidth. IDLE was tried and rejected: on
+            // a machine where the game keeps every core busy an idle thread can
+            // starve for many seconds, and the mod would switch on far too late.
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
             try
             {
@@ -224,10 +290,12 @@ bool Script::runResolver()
     }
 
     // acquire pairs with the worker's release: once done is seen, everything
-    // initialise() wrote into m_patcher is visible to this thread.
+    // initialise() wrote into m_patcher is visible to this thread. One yield per
+    // frame keeps the overlay steady while waiting.
     while (!job->done.load(std::memory_order_acquire))
     {
-        game::waitTicks(100);   // yield the game's main thread
+        Overlay::instance().update(kScanLabel, 0, -1, kPluginVersion);
+        game::waitTicks(0);
     }
 
     DRS_INFO("resolver: background scan finished in %llu ms",
@@ -272,12 +340,19 @@ void Script::enterState(ModState next, std::uint64_t nowMs, const char* reason)
         return;
     }
     DRS_INFO("%s -> %s (%s)", modStateName(m_state), modStateName(next), reason);
+    const ModState previous = m_state;
     m_state          = next;
     m_stateEnteredMs = nowMs;
 
     if (next == ModState::Combat)
     {
-        requestProfile(true);
+        // From COOLDOWN the COMBAT values are still in place (COOLDOWN never
+        // writes), so writing them again would be a write without an effect -
+        // FR-46 / AT-39. 1.0 did exactly that, one more needless hitch per fight.
+        if (previous != ModState::Cooldown)
+        {
+            requestProfile(true);
+        }
     }
     else if (next == ModState::Calm)
     {
@@ -300,6 +375,7 @@ void Script::handleRequests(std::uint64_t nowMs)
         Logger::instance().configure(m_config.debug().logFile,
                                      m_config.debug().logLevel,
                                      m_config.debug().maxLogSizeMb);
+        publishHotkeys();
         m_detector.configure(m_config);
         Overlay::instance().configure(m_config);
         // The snapshot is NOT re-taken. Re-reading the config must never change
@@ -338,9 +414,32 @@ void Script::handleRequests(std::uint64_t nowMs)
     }
 }
 
+int Script::cooldownTenthsLeft(std::uint64_t nowMs) const
+{
+    if (m_state != ModState::Cooldown)
+    {
+        return -1;
+    }
+    const std::uint64_t cooldownMs =
+        static_cast<std::uint64_t>(m_config.general().cooldownSeconds * 1000.0f);
+    const std::uint64_t elapsed   = nowMs - m_stateEnteredMs;
+    const std::uint64_t remaining = (elapsed < cooldownMs) ? (cooldownMs - elapsed) : 0u;
+    return static_cast<int>(remaining / 100u);
+}
+
 void Script::tick(std::uint64_t nowMs)
 {
     handleRequests(nowMs);
+
+    // Draw the on-screen overlay every tick. UIDEBUG text is immediate-mode: if
+    // it is issued only at the detector poll rate (DetectorHz = 4) it shows for
+    // one frame and vanishes for the next ~15, which is the flicker reported in
+    // game on 1.0. Re-issuing it every tick costs one native call (the text is
+    // cached, see Overlay.h) and is a no-op when OnScreenState = 0. It is drawn in
+    // every state, including the two disabled ones, so the overlay honestly shows
+    // when the mod is off. hostileCount is the last polled value (D-1).
+    Overlay::instance().update(modStateName(m_state), m_lastHostileCount,
+                               cooldownTenthsLeft(nowMs), kPluginVersion);
 
     if (m_state == ModState::DisabledPermanent || m_state == ModState::DisabledByUser)
     {
@@ -370,6 +469,9 @@ void Script::tick(std::uint64_t nowMs)
         const int playerId = game::playerId();
         const SignalSnapshot signals = m_detector.poll(ped, playerId, nowMs);
         const bool combatNow = m_forcedCombat || signals.anyCombat();
+
+        // Cache for the overlay, which draws every tick (see above).
+        m_lastHostileCount = signals.hostileCount;
 
         char reason[128] = {};
         m_detector.describe(reason, sizeof(reason));
@@ -403,9 +505,6 @@ void Script::tick(std::uint64_t nowMs)
         default:
             break;
         }
-
-        Overlay::instance().update(modStateName(m_state), signals.hostileCount,
-                                   kPluginVersion);
     }
 
     flushPendingWrite();
@@ -417,9 +516,11 @@ void Script::run()
     {
         // Idle forever rather than unregister: unregistering would make the
         // failure invisible, and the log is the only diagnostic a user can send.
+        // The overlay keeps showing the disabled state if it is switched on.
         while (true)
         {
-            game::waitTicks(1000);
+            Overlay::instance().update(modStateName(m_state), 0, -1, kPluginVersion);
+            game::waitTicks(0);
         }
     }
 

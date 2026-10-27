@@ -1,5 +1,7 @@
 // WeaponTable.h — compiled-in reference data, read out of an unmodified
-// weapons.ymt on 2026-09-26 and cross-checked line by line against the file.
+// weapons.ymt on 2026-09-26 and cross-checked line by line against the file,
+// then expanded 2026-10-19 with the gun variants present in the merged overhaul
+// file (game_data/weapons_merged_part2.txt) and vanilla_weapon_anim_rate.csv.
 //
 // Why this is compiled in and not only in the INI: these numbers are what lets
 // the resolver recognise the right field in memory (DESIGN.md 3.4). If the
@@ -9,6 +11,23 @@
 //
 // These are NOT tuning values. They are stock Rockstar values used as a
 // signature. Never write them to memory as if they were a profile.
+//
+// COVERAGE (2026-10-19, D-5): base weapons AND their named/variant forms each
+// have their own CWeaponInfo in memory, with their own AnimReloadRate. The
+// resolver scans for every hash listed here, so a variant (e.g. the Mexican
+// Cattleman, John's Cattleman, a dual-wield) is switched between CALM and COMBAT
+// too, not left on whatever weapons.ymt loaded. Per-weapon TUNING still comes
+// from the INI by longest-prefix match (Config::matchWeapon), so no new INI
+// section is needed for a variant — it uses its base weapon's section.
+//
+// Variants share their base weapon's sectioned-reload profile (profileName /
+// profileHash), so they add NO new entries to kConditionReference below.
+//
+// The five weapons with no CWeaponInfo entry in a FILE at all — LeMat, Navy,
+// M1899, Evans, Elephant — keep vanillaAnimReloadRate = 0 (unknown) and take no
+// part in offset discovery. The first in-game run (2026-10-19) confirmed Navy,
+// M1899 and Evans DO exist in memory and are patchable; LeMat/Elephant still to
+// be confirmed by a resolver log line when held.
 //
 // No dependency on the ScriptHookRDR2 SDK.
 
@@ -24,50 +43,97 @@ struct WeaponReference
     const char* profileName;     // CSectionedReloadInfo name, lower case, or nullptr
     std::uint32_t profileHash;   // non-zero only when the profile name is itself a hash
     float vanillaAnimReloadRate; // stock CWeaponInfo::AnimReloadRate, 0 = unknown
-    float vanillaLoopRate;       // stock GoodCondition LoopRate, 0 = unknown
-    float vanillaTimeBetween;    // stock GoodCondition TimeBetweenBulletsInLoop, 0 = unknown
+    float vanillaLoopRate;       // stock GoodCondition LoopRate, 0 = unknown (reference only)
+    float vanillaTimeBetween;    // stock GoodCondition TimeBetweenBulletsInLoop, 0 = unknown (reference only)
 };
 
-// 24 shipped weapons. The last five have no CWeaponInfo entry in stock data at
-// all, so every stock value is 0 = unknown and they take no part in discovery.
-// The Rolling Block's sectioned profile is stored under a joaat hash whose
-// source string is not in any known dictionary, so it is matched by hash.
-// The Carcano's profile is called sniper_carcano, NOT sniperrifle_carcano —
-// a config keyed on the weapon name would silently never match it.
+// Base weapons plus every gun variant present in the merged overhaul file.
+// vanillaAnimReloadRate of a variant equals its base weapon's stock value
+// (verified: all Cattleman forms 0.32 in the merged file share base 1.00 stock;
+// all repeater forms 1.30; etc). The Rolling Block's sectioned profile is stored
+// under a joaat hash whose source string is not in any known dictionary, so it
+// and its variants are matched by that hash. The Carcano's profile is called
+// sniper_carcano, NOT sniperrifle_carcano.
 inline constexpr WeaponReference kWeaponReference[] = {
-    { "WEAPON_RIFLE_VARMINT",            "rifle_varmint",         0u,          1.30f, 2.20f,  0.125f },
-    { "WEAPON_REPEATER_CARBINE",         "repeater_carbine",      0u,          1.30f, 2.00f,  0.020f },
-    { "WEAPON_REPEATER_WINCHESTER",      "repeater_winchester",   0u,          1.30f, 3.00f,  0.125f },
-    { "WEAPON_REPEATER_HENRY",           "repeater_henry",        0u,          1.30f, 3.00f,  0.125f },
-    { "WEAPON_RIFLE_BOLTACTION",         "rifle_boltaction",      0u,          1.30f, 3.00f,  0.125f },
-    { "WEAPON_RIFLE_SPRINGFIELD",        "rifle_springfield",     0u,          1.00f, 3.00f,  0.125f },
-    { "WEAPON_SNIPERRIFLE_ROLLINGBLOCK", nullptr,                 0xDC893365u, 1.00f, 2.25f,  0.125f },
-    { "WEAPON_SNIPERRIFLE_CARCANO",      "sniper_carcano",        0u,          1.00f, 3.00f,  0.125f },
-    { "WEAPON_REVOLVER_CATTLEMAN",       "revolver_cattleman",    0u,          1.00f, 5.00f,  0.100f },
-    { "WEAPON_REVOLVER_SCHOFIELD",       "revolver_schofield",    0u,          1.00f, 3.50f,  0.100f },
-    { "WEAPON_REVOLVER_DOUBLEACTION",    "revolver_doubleaction", 0u,          1.00f, 5.00f,  0.100f },
-    { "WEAPON_PISTOL_VOLCANIC",          "pistol_volcanic",       0u,          1.00f, 5.00f,  0.100f },
-    { "WEAPON_PISTOL_MAUSER",            "pistol_mauser",         0u,          1.00f, 5.00f,  0.100f },
-    { "WEAPON_PISTOL_SEMIAUTO",          "pistol_semiauto",       0u,          1.00f, 10.00f, 0.100f },
-    { "WEAPON_SHOTGUN_PUMP",             "shotgun_pump",          0u,          1.00f, 3.00f,  0.125f },
-    { "WEAPON_SHOTGUN_REPEATING",        "shotgun_repeating",     0u,          1.00f, 3.50f,  0.125f },
-    { "WEAPON_SHOTGUN_SEMIAUTO",         "shotgun_semiauto",      0u,          1.00f, 3.00f,  0.125f },
-    { "WEAPON_SHOTGUN_DOUBLEBARREL",     "shotgun_doublebarrel",  0u,          1.00f, 3.00f,  0.125f },
-    { "WEAPON_SHOTGUN_SAWEDOFF",         "shotgun_sawedoff",      0u,          1.00f, 3.00f,  0.125f },
-    { "WEAPON_REVOLVER_LEMAT",           nullptr,                 0u,          0.0f,  0.0f,   0.0f },
-    { "WEAPON_REVOLVER_NAVY",            nullptr,                 0u,          0.0f,  0.0f,   0.0f },
-    { "WEAPON_PISTOL_M1899",             nullptr,                 0u,          0.0f,  0.0f,   0.0f },
-    { "WEAPON_REPEATER_EVANS",           nullptr,                 0u,          0.0f,  0.0f,   0.0f },
-    { "WEAPON_RIFLE_ELEPHANT",           nullptr,                 0u,          0.0f,  0.0f,   0.0f },
+    // ---- long guns: repeaters & rifles (stock AnimReloadRate 1.30) -----------
+    { "WEAPON_RIFLE_VARMINT",                   "rifle_varmint",         0u,          1.30f, 2.20f,  0.125f },
+    { "WEAPON_REPEATER_CARBINE",                "repeater_carbine",      0u,          1.30f, 2.00f,  0.020f },
+    { "WEAPON_REPEATER_CARBINE_SADIE",          "repeater_carbine",      0u,          1.30f, 2.00f,  0.020f },
+    { "WEAPON_REPEATER_WINCHESTER",             "repeater_winchester",   0u,          1.30f, 3.00f,  0.125f },
+    { "WEAPON_REPEATER_WINCHESTER_JOHN",        "repeater_winchester",   0u,          1.30f, 3.00f,  0.125f },
+    { "WEAPON_REPEATER_HENRY",                  "repeater_henry",        0u,          1.30f, 3.00f,  0.125f },
+    { "WEAPON_RIFLE_BOLTACTION",                "rifle_boltaction",      0u,          1.30f, 3.00f,  0.125f },
+    { "WEAPON_RIFLE_BOLTACTION_BILL",           "rifle_boltaction",      0u,          1.30f, 3.00f,  0.125f },
+
+    // ---- long guns: single-shot & semi-auto (stock AnimReloadRate 1.00) ------
+    { "WEAPON_RIFLE_SPRINGFIELD",               "rifle_springfield",     0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SNIPERRIFLE_CARCANO",             "sniper_carcano",        0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SNIPERRIFLE_ROLLINGBLOCK",        nullptr,                 0xDC893365u, 1.00f, 2.25f,  0.125f },
+    { "WEAPON_SNIPERRIFLE_ROLLINGBLOCK_EXOTIC", nullptr,                 0xDC893365u, 1.00f, 2.25f,  0.125f },
+    { "WEAPON_SNIPERRIFLE_ROLLINGBLOCK_LENNY",  nullptr,                 0xDC893365u, 1.00f, 2.25f,  0.125f },
+
+    // ---- revolvers (stock AnimReloadRate 1.00) -------------------------------
+    { "WEAPON_REVOLVER_CATTLEMAN",                   "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_DUALWIELD",         "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_HOSEA",             "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_HOSEA_DUALWIELD",   "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_JOHN",              "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_KIERAN",            "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_LENNY",             "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_SADIE",             "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_SADIE_DUALWIELD",   "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_SEAN",              "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_MEXICAN",           "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_CATTLEMAN_PIG",               "revolver_cattleman",    0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD",                   "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD_BILL",              "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD_DUALWIELD",         "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD_DUTCH",             "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD_DUTCH_DUALWIELD",   "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD_GOLDEN",            "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD_UNCLE",             "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_SCHOFIELD_CALLOWAY",          "revolver_schofield",    0u, 1.00f, 3.50f, 0.100f },
+    { "WEAPON_REVOLVER_DOUBLEACTION",                "revolver_doubleaction", 0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_DOUBLEACTION_EXOTIC",         "revolver_doubleaction", 0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_DOUBLEACTION_MICAH",          "revolver_doubleaction", 0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_DOUBLEACTION_MICAH_DUALWIELD","revolver_doubleaction", 0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_DOUBLEACTION_JAVIER",         "revolver_doubleaction", 0u, 1.00f, 5.00f, 0.100f },
+    { "WEAPON_REVOLVER_DOUBLEACTION_DUALWIELD",      "revolver_doubleaction", 0u, 1.00f, 5.00f, 0.100f },
+
+    // ---- pistols (stock AnimReloadRate 1.00) ---------------------------------
+    { "WEAPON_PISTOL_VOLCANIC",                 "pistol_volcanic",       0u,          1.00f, 5.00f,  0.100f },
+    { "WEAPON_PISTOL_MAUSER",                   "pistol_mauser",         0u,          1.00f, 5.00f,  0.100f },
+    { "WEAPON_PISTOL_MAUSER_DRUNK",             "pistol_mauser",         0u,          1.00f, 5.00f,  0.100f },
+    { "WEAPON_PISTOL_SEMIAUTO",                 "pistol_semiauto",       0u,          1.00f, 10.00f, 0.100f },
+
+    // ---- shotguns (stock AnimReloadRate 1.00) --------------------------------
+    { "WEAPON_SHOTGUN_PUMP",                    "shotgun_pump",          0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SHOTGUN_REPEATING",               "shotgun_repeating",     0u,          1.00f, 3.50f,  0.125f },
+    { "WEAPON_SHOTGUN_SEMIAUTO",                "shotgun_semiauto",      0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SHOTGUN_SEMIAUTO_HOSEA",          "shotgun_semiauto",      0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SHOTGUN_DOUBLEBARREL",            "shotgun_doublebarrel",  0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SHOTGUN_DOUBLEBARREL_EXOTIC",     "shotgun_doublebarrel",  0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SHOTGUN_DOUBLEBARREL_UNCLE",      "shotgun_doublebarrel",  0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SHOTGUN_SAWEDOFF",                "shotgun_sawedoff",      0u,          1.00f, 3.00f,  0.125f },
+    { "WEAPON_SHOTGUN_SAWEDOFF_CHARLES",        "shotgun_sawedoff",      0u,          1.00f, 3.00f,  0.125f },
+
+    // ---- no CWeaponInfo in any weapons.ymt: vanilla value unknown (0) --------
+    // Patchable only by this plugin via memory. Confirmed in memory 2026-10-19:
+    // Navy, M1899, Evans. LeMat, Elephant still to confirm when held.
+    { "WEAPON_REVOLVER_LEMAT",                  nullptr,                 0u,          0.0f,  0.0f,   0.0f },
+    { "WEAPON_REVOLVER_NAVY",                   nullptr,                 0u,          0.0f,  0.0f,   0.0f },
+    { "WEAPON_PISTOL_M1899",                    nullptr,                 0u,          0.0f,  0.0f,   0.0f },
+    { "WEAPON_REPEATER_EVANS",                  nullptr,                 0u,          0.0f,  0.0f,   0.0f },
+    { "WEAPON_RIFLE_ELEPHANT",                  nullptr,                 0u,          0.0f,  0.0f,   0.0f },
 };
 
 // Stock per-condition LoopRate and TimeBetweenBulletsInLoop, in the order
 // GoodCondition, WornCondition, GoodConditionOH, WornConditionOH.
 //
-// Note the counter-intuitive part: WornCondition often has a HIGHER LoopRate
-// than GoodCondition (varmint 3.0 vs 2.2). The wear penalty lives in
-// TimeBetweenBulletsInLoop (0.225 vs 0.125), not in LoopRate. A mod that simply
-// lowers LoopRate in every block inverts clean vs worn.
+// Unchanged from Chat 7: variants share these profiles, so no new rows. Note the
+// counter-intuitive part: WornCondition often has a HIGHER LoopRate than
+// GoodCondition (varmint 3.0 vs 2.2). The wear penalty lives in
+// TimeBetweenBulletsInLoop (0.225 vs 0.125), not in LoopRate.
 struct ConditionReference
 {
     const char*   profileName;

@@ -2,6 +2,7 @@
 #include "GameApi.h"
 #include "Logger.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -80,10 +81,19 @@ SignalSnapshot CombatDetector::poll(int playerPedHandle, int playerIdHandle,
         // clock and the result is reused in between.
         if (m_lastPedScanMs == 0 || nowMs - m_lastPedScanMs >= scanIntervalMs)
         {
-            m_lastPedScanMs  = nowMs;
+            m_lastPedScanMs = nowMs;
+            // The ped sweep is the most expensive signal. Time it, so the log shows
+            // whether a hitch felt around combat transitions is this scan (D-2).
+            const auto scanStart = std::chrono::steady_clock::now();
             m_cachedHostiles = game::hostilePedsNearPlayer(playerPedHandle,
                                                            m_general.threatRadius,
                                                            m_general.maxPedsScanned);
+            const long long scanMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - scanStart).count();
+            if (scanMs >= 2)   // log only when it actually cost something
+            {
+                DRS_INFO("ped scan: %d hostile(s), %lld ms", m_cachedHostiles, scanMs);
+            }
         }
         snapshot.hostileCount  = m_cachedHostiles;
         snapshot.hostileNearby = (m_cachedHostiles > 0);

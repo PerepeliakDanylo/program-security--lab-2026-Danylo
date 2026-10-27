@@ -435,6 +435,14 @@ void Config::applySectionKey(const std::string& section, const std::string& key,
                 warn("[Memory] %s = '%s' is not a number, staying on auto", name, value.c_str());
                 return true;
             }
+            if (integer == 0)
+            {
+                // Offset 0 is the name-hash field itself and can never hold a reload
+                // rate, so 0 is read as "auto", exactly as the shipped INI comment
+                // says. 1.0 accepted it as a real offset.
+                warn("[Memory] %s = 0 means auto; auto-discovery stays on", name);
+                return true;
+            }
             if (integer < 0 || static_cast<std::uint32_t>(integer) >= m_memory.maxOffsetWindow)
             {
                 // This is the exact line the security test looks for.

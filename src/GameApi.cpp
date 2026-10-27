@@ -155,6 +155,15 @@ void waitTicks(std::uint32_t milliseconds)
     scriptWait(static_cast<DWORD>(milliseconds));
 }
 
+bool isGameplayReady()
+{
+    // CAMERA::IS_SCREEN_FADED_IN    0x37F9A426FBCF4AF2  BOOL ()
+    // DLC::GET_IS_LOADING_SCREEN_ACTIVE 0x71D4BF5890659B0C BOOL ()
+    // Both recorded in docs/NATIVES.md 3.5. A wrong answer here only delays the
+    // start of the scan (Script caps the wait at 120 s); nothing is written.
+    return CAMERA::IS_SCREEN_FADED_IN() != 0 && DLC::GET_IS_LOADING_SCREEN_ACTIVE() == 0;
+}
+
 int playerId()
 {
     return PLAYER::PLAYER_ID();
@@ -274,8 +283,12 @@ int hostilePedsNearPlayer(int playerPedHandle, float radius, int maxPeds)
         return 0;
     }
 
-    std::vector<int> handles(static_cast<std::size_t>(maxPeds), 0);
-    const int found = worldGetAllPeds(handles.data(), maxPeds);
+    // One buffer for the life of the plugin: this runs on the hot path at
+    // PedScanHz and must not allocate (NFR-01). 256 is the INI's upper bound for
+    // MaxPedsScanned, so the buffer can never be too small.
+    static int handles[256];
+    const int capacity = (maxPeds < 256) ? maxPeds : 256;
+    const int found = worldGetAllPeds(handles, capacity);
     if (found <= 0)
     {
         return 0;
@@ -289,9 +302,9 @@ int hostilePedsNearPlayer(int playerPedHandle, float radius, int maxPeds)
 #endif
 
     int hostiles = 0;
-    for (int i = 0; i < found && i < maxPeds; ++i)
+    for (int i = 0; i < found && i < capacity; ++i)
     {
-        const int candidate = handles[static_cast<std::size_t>(i)];
+        const int candidate = handles[i];
         if (candidate == 0 || candidate == playerPedHandle)
         {
             continue;

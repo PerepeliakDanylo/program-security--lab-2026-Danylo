@@ -171,6 +171,17 @@ bool isUncachedProtection(DWORD protect) noexcept
     return (protect & (PAGE_WRITECOMBINE | PAGE_NOCACHE)) != 0u;
 }
 
+bool isWritableProtection(DWORD protect) noexcept
+{
+    if ((protect & PAGE_GUARD) != 0u || (protect & PAGE_NOACCESS) != 0u)
+    {
+        return false;
+    }
+    const DWORD writable = PAGE_READWRITE | PAGE_WRITECOPY |
+                           PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    return (protect & writable) != 0u;
+}
+
 bool protectionAllowsRead(DWORD protect) noexcept
 {
     if ((protect & PAGE_GUARD) != 0u || (protect & PAGE_NOACCESS) != 0u)
@@ -339,6 +350,56 @@ bool MemScan::isAcceptableTarget(const void* address, std::size_t bytes) noexcep
     return true;
 }
 
+bool MemScan::isWritable(const void* address, std::size_t bytes) noexcept
+{
+    if (address == nullptr)
+    {
+        return false;
+    }
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0)
+    {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT || !isWritableProtection(mbi.Protect))
+    {
+        return false;
+    }
+    const std::uint8_t* start = reinterpret_cast<const std::uint8_t*>(address);
+    const std::uint8_t* regionEnd =
+        reinterpret_cast<const std::uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+    return start + bytes <= regionEnd;
+}
+
+std::size_t MemScan::spanFromRegions(const std::uint8_t* address, std::size_t cap) const noexcept
+{
+    if (address == nullptr || m_regions.empty())
+    {
+        return 0;
+    }
+    // m_regions is built by walking the address space upwards, so it is sorted
+    // by base. Find the last region whose base is <= address.
+    std::size_t lo = 0;
+    std::size_t hi = m_regions.size();
+    while (lo < hi)
+    {
+        const std::size_t mid = lo + (hi - lo) / 2u;
+        if (m_regions[mid].base <= address) { lo = mid + 1u; } else { hi = mid; }
+    }
+    if (lo == 0)
+    {
+        return 0;
+    }
+    const MemoryRegion& region = m_regions[lo - 1u];
+    const std::uint8_t* end = region.base + region.size;
+    if (address >= end)
+    {
+        return 0;
+    }
+    const std::size_t span = static_cast<std::size_t>(end - address);
+    return (span > cap) ? cap : span;
+}
+
 bool MemScan::buildRegionList(bool includeMapped, std::uint64_t maxScanBytes)
 {
     m_regions.clear();
@@ -466,14 +527,41 @@ std::vector<ScanResult> MemScan::findDwords(const std::vector<ScanRequest>& requ
     const ULONGLONG startTicks = GetTickCount64();
     ULONGLONG lastProgressTicks = startTicks;
 
+    // Cooperative yield granularity. The scan is a background job: between
+    // chunks it hands the core back to any ready thread, so a single huge region
+    // never hogs memory bandwidth for seconds at a time (D-3).
+    constexpr std::size_t kChunkBytes = 16u * 1024u * 1024u;
+
     for (const MemoryRegion& region : m_regions)
     {
-        const std::size_t found = guardedScanRegion(region.base, region.size,
-                                                    maybeTable.data(),
-                                                    values.data(), values.size(),
-                                                    hitAddresses.data(),
-                                                    hitValueIndex.data(),
-                                                    kRegionHitCapacity);
+        for (std::size_t offset = 0; offset < region.size; offset += kChunkBytes)
+        {
+            const std::size_t remaining = region.size - offset;
+            const std::size_t chunk     = (remaining < kChunkBytes) ? remaining : kChunkBytes;
+
+            const std::size_t found = guardedScanRegion(region.base + offset, chunk,
+                                                        maybeTable.data(),
+                                                        values.data(), values.size(),
+                                                        hitAddresses.data(),
+                                                        hitValueIndex.data(),
+                                                        kRegionHitCapacity);
+
+            for (std::size_t i = 0; i < found; ++i)
+            {
+                ScanResult& result = results[hitValueIndex[i]];
+                if (result.hits.size() < requests[hitValueIndex[i]].maxHits)
+                {
+                    result.hits.push_back(hitAddresses[i]);
+                }
+                else
+                {
+                    result.truncated = true;
+                }
+            }
+
+            SwitchToThread();
+        }
+
         bytesScannedOut += region.size;
 
         // A progress line every few seconds: if a scan is ever slow on some
@@ -486,19 +574,6 @@ std::vector<ScanResult> MemScan::findDwords(const std::vector<ScanRequest>& requ
                      static_cast<double>(bytesScannedOut) / (1024.0 * 1024.0),
                      static_cast<double>(m_scannableBytes) / (1024.0 * 1024.0),
                      static_cast<unsigned long long>(nowTicks - startTicks));
-        }
-
-        for (std::size_t i = 0; i < found; ++i)
-        {
-            ScanResult& result = results[hitValueIndex[i]];
-            if (result.hits.size() < requests[hitValueIndex[i]].maxHits)
-            {
-                result.hits.push_back(hitAddresses[i]);
-            }
-            else
-            {
-                result.truncated = true;
-            }
         }
     }
 
