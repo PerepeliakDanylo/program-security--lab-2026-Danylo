@@ -1,58 +1,58 @@
-"""drs_release — CLI інструмента супроводжувача релізів (версія ЛР6: другий фактор і шифрування).
+"""drs_release — CLI інструмента супроводжувача релізів (версія ЛР7: цілісність і автентичність).
 
 Призначення цільового файлу в репозиторії: tools/drs_release/drs_release.py
-Ця версія ЗАМІНЮЄ версію ЛР5. Додано в ЛР6 (уся криптографія — у crypto.py):
-  * enroll-totp [--force] — підключення ВЛАСНОГО другого фактора (TOTP, RFC 6238). Секрет
-    одразу запечатується в конверт AES-256-GCM; підключення завершується лише правильним
-    кодом із застосунку-автентифікатора (інакше секрет відкидається);
-  * вхід для запису з TOTP: пароль + код. Невірний, повторений код чи підмінений конверт —
-    невдала спроба входу (те саме блокування, що й за пароль); кожен код одноразовий;
-  * rotate-key — ротація ключа шифрування власного секрету (новий DEK і сіль KEK; секрет,
-    пароль і лічильник одноразовості ті самі);
-  * passwd: свій пароль — секрет переобгортається під ключ із нового пароля; чужий (owner) —
-    TOTP запису скидається (owner не має чужого майстер-секрета й відкрити секрет не може).
-Автентифікація (ЛР4) і доступ (ЛР5) ті самі: getpass, офлайн, не в грі; права перевіряються
-в точці виконання кожної команди.
+Ця версія ЗАМІНЮЄ версію ЛР6. Додано в ЛР7:
+  * build-manifest <тека> — SHA-256-маніфест усіх файлів релізу (integrity.py);
+  * sign <тека> — підпис маніфесту Ed25519 приватним ключем супроводжувача; підписується лише
+    маніфест, що збігається з теперішнім вмістом теки;
+  * verify <тека> — підпис (відкритим ключем із репозиторію) + звірка кожного файла;
+  * атрибути реліз-кандидата для ABAC-правила sign — з реального git (гілка, незакомічені
+    зміни), а не з файла, який можна відредагувати; помилка git = «брудний» стан → відмова;
+  * цілісність файла облікових записів (accounts.py): будь-яка невідповідність — повідомлення
+    й код виходу 2 (fail closed); `protect` — одноразово для сховища з ЛР4-ЛР6.
+Автентифікація (ЛР4), доступ (ЛР5) і другий фактор (ЛР6) — ті самі: getpass, офлайн, не в грі.
 
-CLI:
-    python drs_release.py init                      # порожній файл облікових записів
+CLI (запускати з теки tools/drs_release — ключі й сховище лежать поруч):
+    python drs_release.py init                      # порожній файл облікових записів + ключ цілісності
     python drs_release.py add-user <owner>          # БУТСТРАП: лише коли записів ще немає → owner
     python drs_release.py login <user>              # вхід (пароль [+ код TOTP]) і сесія
+    python drs_release.py protect                   # один раз: захистити сховище, створене до ЛР7
 
 У сесії (перевірка прав — у точці виконання кожної операції, не ховаємо меню):
     help whoami status                               # будь-який автентифікований
-    list-users                                       # viewer+
+    list-users | verify <тека>                       # viewer+
     enroll-totp [--force]                            # viewer+, лише свій запис, свіже підтвердження
-    build-manifest                                   # contributor+          (тіло — ЛР7)
-    sign <build>                                     # maintainer+, ABAC чистий master (тіло — ЛР7)
+    build-manifest <тека>                            # contributor+
+    sign <тека>                                      # maintainer+, ABAC: git master без змін
     add-user <user> <role> | set-role <user> <role...> | rotate-key   # owner
     passwd [user]                                    # власник свого запису або owner
-    verify                                           # viewer+               (тіло — ЛР7)
     exit
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
-import json
 import os
+import subprocess
 import sys
 import time
 
 from cryptography.exceptions import InvalidTag
 
-from accounts import AccountStore
+import integrity
+from accounts import AccountStore, IntegrityError
 from authz import ROLES, authorize
 from crypto import (new_totp_secret, open_totp_secret, provisioning_uri, rewrap_for_new_master,
                     rotate as crypto_rotate, seal_totp_secret, totp_match_counter)
 
 DEFAULT_STORE = "drs_release.accounts.json"
 DEFAULT_AUDIT = "drs_release.audit.log"
-RELEASE_STATE = "release.state.json"
 
 IDLE_TIMEOUT_S = 10 * 60
 ABSOLUTE_TIMEOUT_S = 60 * 60
+GIT_TIMEOUT_S = 15
 
 GENERIC_LOGIN_ERROR = "Автентифікацію відхилено."
 DENY = "Операцію відхилено."
@@ -117,18 +117,24 @@ def guard(session: Session, store: AccountStore, operation: str,
     return True
 
 
+def _git(*args: str) -> str:
+    """Один виклик git із фіксованими аргументами (без оболонки); помилка — виняток."""
+    done = subprocess.run(["git", *args], capture_output=True, text=True,
+                          timeout=GIT_TIMEOUT_S, check=True)
+    return done.stdout.strip()
+
+
 def read_release_state() -> dict:
-    """Атрибути релізу-кандидата для ABAC-правила sign. У ЛР7 замінюється на реальний
-    git (branch + `git status --porcelain`); тут читається з release.state.json, а за
-    відсутності файлу повертає небезпечний стан (dirty) → sign буде відхилено."""
-    if os.path.exists(RELEASE_STATE):
-        try:
-            with open(RELEASE_STATE, "r", encoding="utf-8") as fh:
-                s = json.load(fh)
-            return {"branch": s.get("branch"), "dirty": bool(s.get("dirty", True))}
-        except (OSError, ValueError):
-            pass
-    return {"branch": None, "dirty": True}
+    """Атрибути реліз-кандидата для ABAC-правила sign — з реального git (з ЛР7): поточна
+    гілка й наявність незакомічених змін (`git status --porcelain`, ігноровані файли не
+    враховуються). Git недоступний або це не репозиторій — небезпечний стан (dirty) →
+    sign буде відхилено (fail closed)."""
+    try:
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        dirty = bool(_git("status", "--porcelain"))
+        return {"branch": branch, "dirty": dirty}
+    except (OSError, subprocess.SubprocessError):
+        return {"branch": None, "dirty": True}
 
 
 def check_second_factor(store: AccountStore, username: str, master: bytes) -> bool:
@@ -154,10 +160,15 @@ def check_second_factor(store: AccountStore, username: str, master: bytes) -> bo
     return True
 
 
+def _dir_arg(args: list[str]) -> str:
+    """Шлях до теки — решта рядка після команди (шляхи з пробілами; лапки прибираються)."""
+    return " ".join(args).strip().strip('"')
+
+
 # --- команди сесії ----------------------------------------------------------
 def cmd_help(session, store, args):
-    print("help whoami status | list-users verify | enroll-totp [--force] | build-manifest | sign <build> |")
-    print("add-user <user> <role> | set-role <user> <role...> | passwd [user] | rotate-key | exit")
+    print("help whoami status | list-users | verify <тека> | enroll-totp [--force] | build-manifest <тека> |")
+    print("sign <тека> | add-user <user> <role> | set-role <user> <role...> | passwd [user] | rotate-key | exit")
     return True
 
 
@@ -265,8 +276,7 @@ def cmd_passwd(session, store, args):
 def cmd_enroll_totp(session, store, args):
     """Підключення ВЛАСНОГО другого фактора (самообслуговування). Критична операція —
     свіже підтвердження паролем. Секрет одразу запечатується в конверт і відкритим на
-    диск не потрапляє; без правильного коду із застосунку підключення не відбувається
-    (захист від самоблокування неправильно налаштованим автентифікатором)."""
+    диск не потрапляє; без правильного коду із застосунку підключення не відбувається."""
     force = bool(args) and args[0] == "--force"
     if store.has_totp(session.username) and not force:
         print("TOTP уже підключено. enroll-totp --force — підключити новий (старий перестане діяти).")
@@ -290,8 +300,7 @@ def cmd_enroll_totp(session, store, args):
 
 def cmd_rotate_key(session, store, args):
     """Ротація ключів конверта власного секрету: новий DEK і нова сіль KEK. Секрет, пароль
-    і лічильник одноразовості не змінюються (rewrap_totp, а не set_totp: інакше вже
-    використаний код знову став би дійсним)."""
+    і лічильник одноразовості не змінюються."""
     if not guard(session, store, "rotate-key"):
         return True
     blob = store.get_totp(session.username)
@@ -310,27 +319,88 @@ def cmd_rotate_key(session, store, args):
     return True
 
 
-def cmd_sign(session, store, args):
-    state = read_release_state()
-    if not guard(session, store, "sign", resource=state):
-        return True
-    build = args[0] if args else "(без імені)"
-    print(f"[ЛР7] Тут буде підпис збірки {build}. Стан релізу: branch={state['branch']}, "
-          f"dirty={state['dirty']}. Доступ надано — криптографію додає ЛР7.")
-    return True
-
-
 def cmd_build_manifest(session, store, args):
     if not guard(session, store, "build-manifest"):
         return True
-    print("[ЛР7] Тут буде формування SHA-256-маніфесту релізу. Доступ надано.")
+    root = _dir_arg(args)
+    if not root or not os.path.isdir(root):
+        print("Використання: build-manifest <тека релізу>")
+        return True
+    manifest = integrity.build_manifest(root)
+    with open(os.path.join(root, integrity.MANIFEST_NAME), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(manifest)
+    count = len(manifest.splitlines())
+    store.audit(f"build-manifest:{count}", session.username)
+    print(f"Маніфест {integrity.MANIFEST_NAME} створено: {count} файл(ів).")
+    return True
+
+
+def cmd_sign(session, store, args):
+    """Підпис маніфесту. Доступ — maintainer+ і ABAC «git master без змін» (ЛР5, стан — з git);
+    підписується лише маніфест, що збігається з теперішнім вмістом теки."""
+    state = read_release_state()
+    if not guard(session, store, "sign", resource=state):
+        return True
+    root = _dir_arg(args)
+    if not root or not os.path.isdir(root):
+        print("Використання: sign <тека релізу>   (спершу build-manifest)")
+        return True
+    mpath = os.path.join(root, integrity.MANIFEST_NAME)
+    if not os.path.exists(mpath):
+        print("Немає маніфесту — спершу build-manifest.")
+        return True
+    if not os.path.exists(integrity.PRIV_KEY_FILE):
+        print(f"Немає ключа підпису {integrity.PRIV_KEY_FILE} — створіть: python integrity.py genkey")
+        return True
+    with open(mpath, "rb") as fh:
+        manifest = fh.read()
+    problems = integrity.diff_manifest(root, manifest.decode("utf-8"))
+    if problems:
+        store.audit("sign-deny:stale-manifest", session.username)
+        print("Маніфест не відповідає теці (" + "; ".join(problems[:3]) + ") — спершу build-manifest.")
+        return True
+    signature = integrity.sign(integrity.load_key(integrity.PRIV_KEY_FILE), manifest)
+    with open(os.path.join(root, integrity.SIG_NAME), "w", encoding="ascii", newline="\n") as fh:
+        fh.write(base64.b64encode(signature).decode("ascii") + "\n")
+    store.audit("sign:ok", session.username)
+    print(f"Маніфест підписано Ed25519 (branch={state['branch']}, dirty={state['dirty']}) → {integrity.SIG_NAME}.")
     return True
 
 
 def cmd_verify(session, store, args):
+    """Перевірка релізу: підпис маніфесту відкритим ключем із репозиторію + звірка файлів.
+    Відсутній маніфест, підпис чи ключ — теж «не пройдено» (fail closed)."""
     if not guard(session, store, "verify"):
         return True
-    print("[ЛР7] Тут буде перевірка маніфесту/підпису релізу. Доступ надано (read-only).")
+    root = _dir_arg(args)
+    if not root or not os.path.isdir(root):
+        print("Використання: verify <тека релізу>")
+        return True
+    mpath = os.path.join(root, integrity.MANIFEST_NAME)
+    spath = os.path.join(root, integrity.SIG_NAME)
+    problems: list[str] = []
+    sig_ok = False
+    if not (os.path.exists(mpath) and os.path.exists(spath) and os.path.exists(integrity.PUB_KEY_FILE)):
+        problems.append(f"бракує {integrity.MANIFEST_NAME}, {integrity.SIG_NAME} або {integrity.PUB_KEY_FILE}")
+    else:
+        with open(mpath, "rb") as fh:
+            data = fh.read()
+        try:
+            with open(spath, "r", encoding="ascii") as fh:
+                signature = base64.b64decode(fh.read().strip())
+            sig_ok = integrity.verify(integrity.load_key(integrity.PUB_KEY_FILE), data, signature)
+        except (OSError, ValueError):
+            sig_ok = False
+        if not sig_ok:
+            problems.append("підпис недійсний (чужий ключ або змінений маніфест)")
+        problems.extend(integrity.diff_manifest(root, data.decode("utf-8", errors="replace")))
+    if not problems:
+        print("Перевірку пройдено: підпис маніфесту дійсний і вміст теки збігається.")
+    else:
+        print("ПЕРЕВІРКА НЕ ПРОЙДЕНА:")
+        for p in problems:
+            print("  —", p)
+    store.audit(f"verify:{'ok' if not problems else 'fail'}", session.username)
     return True
 
 
@@ -376,13 +446,19 @@ def run_session(session: Session, store: AccountStore) -> None:
 
 # --- підкоманди CLI ---------------------------------------------------------
 def do_init(args) -> int:
+    store = AccountStore(args.store, args.audit)
     if os.path.exists(args.store):
         print("Файл облікових записів уже існує — init скасовано.")
         return 1
-    store = AccountStore(args.store, args.audit)
+    if os.path.exists(store.key_path):
+        # Ключ без файла — аномалія (можливе видалення); новий порожній файл зі старим
+        # ключем відкрив би бутстрап нового власника. Видалити ключ — лише свідомо.
+        print(f"Є ключ цілісності {store.key_path}, але немає файла облікових записів — init скасовано. "
+              "Відновіть файл або свідомо видаліть ключ.")
+        return 1
     store.save()
     store.audit("init")
-    print(f"Створено порожній файл облікових записів: {args.store}")
+    print(f"Створено порожній файл облікових записів: {args.store} (ключ цілісності: {store.key_path})")
     return 0
 
 
@@ -391,6 +467,9 @@ def do_add_user(args) -> int:
     є, додавання — лише через сесію owner (команда add-user), щоб не було обхідного
     шляху повз перевірку прав."""
     store = AccountStore(args.store, args.audit).load()
+    if not os.path.exists(args.store):
+        print("Спершу init.")
+        return 1
     if store.list_users():
         print("Облікові записи вже існують. Додавання — лише в сесії owner (add-user).")
         return 1
@@ -425,23 +504,43 @@ def do_login(args) -> int:
     return 0
 
 
+def do_protect(args) -> int:
+    """Одноразово ввімкнути захист цілісності для сховища з ЛР4-ЛР6 (ні ключа, ні мітки).
+    Захищається ПОТОЧНИЙ вміст файла — після входу варто переглянути list-users."""
+    store = AccountStore(args.store, args.audit)
+    if not store.load_unverified():
+        print("protect не потрібен: файла немає або захист цілісності вже ввімкнено.")
+        return 1
+    store.save()
+    store.audit("integrity-protect")
+    print(f"Захист цілісності ввімкнено: мітка у {args.store}, ключ у {store.key_path} (не комітити).")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="drs_release",
                                 description="Офлайн-інструмент супроводжувача релізів DynamicReloadSpeed.")
     p.add_argument("--store", default=DEFAULT_STORE)
     p.add_argument("--audit", default=DEFAULT_AUDIT)
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("init", help="створити порожній файл облікових записів")
+    sub.add_parser("init", help="створити порожній файл облікових записів і ключ цілісності")
     a = sub.add_parser("add-user", help="бутстрап першого власника (лише для порожнього сховища)")
     a.add_argument("username")
     l = sub.add_parser("login", help="увійти (пароль [+ код TOTP]) і відкрити сесію")
     l.add_argument("username")
+    sub.add_parser("protect", help="один раз: захист цілісності для сховища, створеного до ЛР7")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return {"init": do_init, "add-user": do_add_user, "login": do_login}[args.command](args)
+    handlers = {"init": do_init, "add-user": do_add_user, "login": do_login, "protect": do_protect}
+    try:
+        return handlers[args.command](args)
+    except IntegrityError as exc:
+        # Fail closed: жодна команда не працює з файлом, що не пройшов перевірку.
+        print(str(exc))
+        return 2
 
 
 if __name__ == "__main__":

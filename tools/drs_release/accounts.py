@@ -1,23 +1,27 @@
-"""drs_release / accounts.py — сховище облікових записів супроводжувача релізів (версія ЛР6).
+"""drs_release / accounts.py — сховище облікових записів супроводжувача релізів (версія ЛР7).
 
 Призначення цільового файлу в репозиторії: tools/drs_release/accounts.py
-Ця версія ЗАМІНЮЄ версію ЛР5. Додано в ЛР6:
-  * поле `totp` (конверт секрету TOTP; саме шифрування — у crypto.py) і `totp_last_counter`
-    (номер останнього прийнятого кроку TOTP — код одноразовий, повтор відхиляється);
-  * невдача ДРУГОГО фактора рахується як невдала спроба входу (те саме блокування): для
-    запису з TOTP лічильник невдач скидається лише після повного входу (пароль + код).
+Ця версія ЗАМІНЮЄ версію ЛР6. Додано в ЛР7 — цілісність самого файлу:
+  * поле `mac` у тому ж файлі = HMAC-SHA256 над канонічним JSON решти вмісту; ключ — окремий
+    файл `<сховище>.key` (32 випадкові байти, створюється один раз, у репозиторій не потрапляє);
+  * fail closed: розбіжність мітки, відсутня мітка чи відсутній ключ — IntegrityError, жодних
+    даних не завантажено, подія — у журнал аудиту;
+  * мітка лежить у тому самому файлі, тож атомарний запис (tmp + os.replace) оновлює дані й
+    мітку разом — немає проміжку, коли вони розходяться;
+  * сховище з ЛР4-ЛР6 (без ключа й мітки) не відкривається, доки його явно не захистять
+    командою `protect` (load_unverified + save).
 
-Ядро автентифікації (ЛР4) без змін по суті:
+Ядро автентифікації (ЛР4) і поля TOTP (ЛР6) — без змін по суті:
   * похідний майстер-секрет        PBKDF2-HMAC-SHA256, 600 000 ітерацій, сіль 16 Б
   * верифікатор пароля             HMAC-SHA256(master, "drs-release/verifier")
   * стала за часом перевірка       hmac.compare_digest
-  * блокування після 5 невдач      5 хв, далі подвоєння до 60 хв
+  * блокування після 5 невдач      5 хв, далі подвоєння до 60 хв (пароль або код TOTP)
   * однакова ціна кожної відмови   PBKDF2 і для невідомого, і для заблокованого запису (SR-22)
   * перевірені імена користувачів  лише ^[A-Za-z0-9_.-]{1,32}$ (SR-23)
 
 Офлайн-інструмент: пароль — getpass у терміналі супроводжувача; у грі нічого не відбувається.
-Рішення «чи можна» приймає authz.py; сховище тримає лише інваріант «завжди є owner».
-Жодних сторонніх залежностей — лише стандартна бібліотека (cryptography потрібен тільки crypto.py).
+Жодних сторонніх залежностей — лише стандартна бібліотека (cryptography потрібен тільки crypto.py
+та integrity.py).
 """
 
 from __future__ import annotations
@@ -40,6 +44,10 @@ SALT_BYTES = 16
 MASTER_BYTES = 32
 VERIFIER_INFO = b"drs-release/verifier"
 
+# --- цілісність файлу (ЛР7) -------------------------------------------------
+MAC_FIELD = "mac"                  # HMAC-SHA256 (hex) над канонічним JSON решти полів
+INTEGRITY_KEY_BYTES = 32
+
 # --- політика блокування ----------------------------------------------------
 MAX_FAILS_BEFORE_LOCK = 5
 BASE_LOCK_SECONDS = 5 * 60         # перше блокування — 5 хв
@@ -57,6 +65,10 @@ _DUMMY_SALT = b"drs-release/dummy-user-constant.."[:SALT_BYTES]
 # Керувальні символи (включно з табуляцією й переведенням рядка) у журналі
 # замінюються, щоб одне подання не могло «дописати» в журнал фальшивий рядок.
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+class IntegrityError(Exception):
+    """Файл облікових записів не пройшов перевірку цілісності — роботу зупинено."""
 
 
 def _b64e(raw: bytes) -> str:
@@ -88,6 +100,11 @@ def compute_verifier(master: bytes) -> bytes:
     return hmac.new(master, VERIFIER_INFO, hashlib.sha256).digest()
 
 
+def _canonical(body: dict) -> bytes:
+    """Канонічне подання для мітки: не залежить від відступів і порядку ключів у файлі."""
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
 @dataclass
 class AuthResult:
     ok: bool
@@ -98,11 +115,12 @@ class AuthResult:
 
 
 class AccountStore:
-    """Файл облікових записів у форматі JSON. Запис атомарний (tmp + os.replace),
-    щоб переривання не лишило пошкодженого файлу."""
+    """Файл облікових записів у форматі JSON із вбудованою міткою цілісності (ЛР7).
+    Запис атомарний (tmp + os.replace): дані й мітка змінюються одночасно."""
 
     def __init__(self, path: str, audit_log: str | None = None) -> None:
         self.path = path
+        self.key_path = path + ".key"
         self.audit_log = audit_log
         self.data: dict = {
             "version": 1,
@@ -110,20 +128,97 @@ class AccountStore:
             "users": {},
         }
 
+    # --- ключ і мітка цілісності (ЛР7) ---------------------------------------
+    def _read_key(self) -> bytes | None:
+        if not os.path.exists(self.key_path):
+            return None
+        try:
+            with open(self.key_path, "r", encoding="ascii") as fh:
+                key = bytes.fromhex(fh.read().strip())
+        except (OSError, ValueError):
+            key = b""
+        if len(key) != INTEGRITY_KEY_BYTES:
+            self.audit("integrity-fail:key")
+            raise IntegrityError("Ключ цілісності файла облікових записів пошкоджено — роботу зупинено.")
+        return key
+
+    def _create_key(self) -> bytes:
+        """Новий ключ: O_EXCL (не перезаписує наявний), права 0600 там, де ОС їх підтримує."""
+        key = secrets.token_bytes(INTEGRITY_KEY_BYTES)
+        fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(key.hex() + "\n")
+        self.audit("integrity-key-created")
+        return key
+
+    @staticmethod
+    def _mac(key: bytes, body: dict) -> str:
+        return hmac.new(key, _canonical(body), hashlib.sha256).hexdigest()
+
+    def _read_raw(self) -> dict:
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except ValueError:
+            raw = None
+        if not isinstance(raw, dict):
+            self.audit("integrity-fail:format")
+            raise IntegrityError("Файл облікових записів пошкоджено (не JSON-об'єкт) — роботу зупинено.")
+        return raw
+
+    def _verify(self, raw: dict) -> None:
+        key = self._read_key()
+        tag = raw.get(MAC_FIELD)
+        if key is None and tag is None:
+            self.audit("integrity-fail:unprotected")
+            raise IntegrityError("Файл облікових записів без захисту цілісності (створений до ЛР7). "
+                                 "Один раз виконайте: python drs_release.py protect")
+        if key is None or not isinstance(tag, str):
+            self.audit("integrity-fail:missing")
+            raise IntegrityError("Немає ключа або мітки цілісності файла облікових записів — роботу зупинено.")
+        body = {k: v for k, v in raw.items() if k != MAC_FIELD}
+        if not hmac.compare_digest(self._mac(key, body), tag):
+            self.audit("integrity-fail:mac")
+            raise IntegrityError("Файл облікових записів не пройшов перевірку цілісності (HMAC) — роботу зупинено.")
+
     # --- завантаження / збереження ------------------------------------------
     def load(self) -> "AccountStore":
+        """Завантажити з перевіркою цілісності. Будь-яка невідповідність — IntegrityError,
+        self.data лишається порожнім (fail closed). Файла немає, а ключ є — теж відмова:
+        інакше видалення файла відкривало б бутстрап нового власника."""
         if os.path.exists(self.path):
-            with open(self.path, "r", encoding="utf-8") as fh:
-                self.data = json.load(fh)
+            raw = self._read_raw()
+            self._verify(raw)
+            raw.pop(MAC_FIELD, None)
+            self.data = raw
+        elif os.path.exists(self.key_path):
+            self.audit("integrity-fail:store-missing")
+            raise IntegrityError("Файла облікових записів немає, а ключ цілісності є (можливе видалення) — "
+                                 "відновіть файл із резервної копії або свідомо видаліть ключ.")
         return self
 
+    def load_unverified(self) -> bool:
+        """Лише для `protect`: прочитати сховище з ЛР4-ЛР6, у якого немає НІ ключа, НІ мітки.
+        Повертає True, якщо це саме такий випадок (і дані завантажено), інакше False."""
+        if not os.path.exists(self.path) or os.path.exists(self.key_path):
+            return False
+        raw = self._read_raw()
+        if MAC_FIELD in raw:
+            return False
+        self.data = raw
+        return True
+
     def save(self) -> None:
+        key = self._read_key() or self._create_key()
+        body = {k: v for k, v in self.data.items() if k != MAC_FIELD}
+        out = dict(body)
+        out[MAC_FIELD] = self._mac(key, body)
         folder = os.path.dirname(os.path.abspath(self.path))
         os.makedirs(folder, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=folder, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(self.data, fh, ensure_ascii=False, indent=2)
+                json.dump(out, fh, ensure_ascii=False, indent=2)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)
@@ -254,7 +349,7 @@ class AccountStore:
         self.audit("change-password", username)
         return master
 
-    # --- додано в ЛР6: конверт секрету TOTP і одноразовість кодів -------------
+    # --- конверт секрету TOTP і одноразовість кодів (ЛР6) --------------------
     def has_totp(self, username: str) -> bool:
         rec = self.data["users"].get(username) if valid_username(username) else None
         return bool(rec and rec.get("totp"))

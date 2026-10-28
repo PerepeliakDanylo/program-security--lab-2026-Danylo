@@ -57,3 +57,8 @@ tools/drs_release/drs_release.accounts.json
 tools/drs_release/drs_release.audit.log
 tools/drs_release/.venv/
 tools/drs_release/release.state.json
+
+# tools/drs_release — ключі (ЛР7), не комітити
+tools/drs_release/drs_release.accounts.json.key
+tools/drs_release/drs_release.signing.key
+
