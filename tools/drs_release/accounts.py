@@ -1,27 +1,23 @@
-"""drs_release / accounts.py — сховище облікових записів супроводжувача релізів (версія ЛР5).
+"""drs_release / accounts.py — сховище облікових записів супроводжувача релізів (версія ЛР6).
 
 Призначення цільового файлу в репозиторії: tools/drs_release/accounts.py
-Ця версія ЗАМІНЮЄ версію ЛР4: ядро автентифікації без змін, додано керування записами
-для авторизованих операцій (list_users, get_roles, set_roles, change_password).
+Ця версія ЗАМІНЮЄ версію ЛР5. Додано в ЛР6:
+  * поле `totp` (конверт секрету TOTP; саме шифрування — у crypto.py) і `totp_last_counter`
+    (номер останнього прийнятого кроку TOTP — код одноразовий, повтор відхиляється);
+  * невдача ДРУГОГО фактора рахується як невдала спроба входу (те саме блокування): для
+    запису з TOTP лічильник невдач скидається лише після повного входу (пароль + код).
 
-Це ОФЛАЙН-інструмент супроводжувача. Він не має нічого спільного з процесом гри й
-НЕ перехоплює введення в грі: пароль вводиться у власному терміналі супроводжувача
-через getpass (як у sudo чи git). Ядро автентифікації (ЛР4):
-
+Ядро автентифікації (ЛР4) без змін по суті:
   * похідний майстер-секрет        PBKDF2-HMAC-SHA256, 600 000 ітерацій, сіль 16 Б
   * верифікатор пароля             HMAC-SHA256(master, "drs-release/verifier")
   * стала за часом перевірка       hmac.compare_digest
   * блокування після 5 невдач      5 хв, далі подвоєння до 60 хв
-  * однакова ціна кожної відмови   PBKDF2 рахується і для невідомого, і для
-                                   заблокованого запису (SR-22)
+  * однакова ціна кожної відмови   PBKDF2 і для невідомого, і для заблокованого запису (SR-22)
   * перевірені імена користувачів  лише ^[A-Za-z0-9_.-]{1,32}$ (SR-23)
-  * журнал аудиту                  додавання у файл, окремо від загального повідомлення
 
-Рішення «чи можна» тут НЕ приймаються: це робить authz.py у точці виконання команди.
-Сховище лише гарантує інваріант, який не залежить від того, хто питає: у системі завжди
-лишається щонайменше один owner.
-
-Жодних сторонніх залежностей — лише стандартна бібліотека.
+Офлайн-інструмент: пароль — getpass у терміналі супроводжувача; у грі нічого не відбувається.
+Рішення «чи можна» приймає authz.py; сховище тримає лише інваріант «завжди є owner».
+Жодних сторонніх залежностей — лише стандартна бібліотека (cryptography потрібен тільки crypto.py).
 """
 
 from __future__ import annotations
@@ -95,7 +91,7 @@ def compute_verifier(master: bytes) -> bytes:
 @dataclass
 class AuthResult:
     ok: bool
-    reason: str                    # машинний код для журналу: ok / bad-credentials / locked / no-such-user
+    reason: str                    # машинний код для журналу: ok / bad-credentials / locked / no-such-user / totp
     master: bytes | None = None    # лише за успіху; потрібен для секрету TOTP (ЛР6)
     roles: list[str] = field(default_factory=list)
     retry_after: int = 0           # секунд до кінця блокування (для журналу, не для користувача)
@@ -159,12 +155,17 @@ class AccountStore:
             "failed_count": 0,
             "lock_level": 0,
             "locked_until": 0,
-            "totp": None,                        # конвертне шифрування секрету — ЛР6
+            "totp": None,                        # конверт секрету TOTP (crypto.py)
+            "totp_last_counter": None,           # останній прийнятий крок TOTP
         }
         self.audit("add-user", username)
 
     # --- автентифікація ------------------------------------------------------
-    def authenticate(self, username: str, password: str, now: float | None = None) -> AuthResult:
+    def authenticate(self, username: str, password: str, now: float | None = None,
+                     second_factor_pending: bool = False) -> AuthResult:
+        """Перевірка пароля. second_factor_pending=True — у запису є TOTP: за
+        правильного пароля лічильник невдач НЕ скидається, поки не пройде й код
+        (complete_login); невдалий код — record_failure, як і невдалий пароль."""
         now = time.time() if now is None else now
         user = self.data["users"].get(username) if valid_username(username) else None
 
@@ -184,14 +185,27 @@ class AccountStore:
             return AuthResult(ok=False, reason="locked", retry_after=retry)
 
         if hmac.compare_digest(compute_verifier(master), _b64d(user["verifier"])):
-            user["failed_count"] = 0
-            user["lock_level"] = 0
-            user["locked_until"] = 0
-            self.save()
-            self.audit("login-ok", username)
+            if second_factor_pending:
+                self.audit("login-password-ok", username)
+            else:
+                self.complete_login(username)
             return AuthResult(ok=True, reason="ok", master=master, roles=list(user["roles"]))
 
-        # невдала спроба
+        return self.record_failure(username, "bad-credentials", now)
+
+    def complete_login(self, username: str) -> None:
+        """Повний вхід пройдено: скинути лічильник і рівень блокування."""
+        user = self.data["users"][username]
+        user["failed_count"] = 0
+        user["lock_level"] = 0
+        user["locked_until"] = 0
+        self.save()
+        self.audit("login-ok", username)
+
+    def record_failure(self, username: str, reason: str, now: float | None = None) -> AuthResult:
+        """Невдала спроба (пароль або другий фактор): лічильник, за потреби — блокування."""
+        now = time.time() if now is None else now
+        user = self.data["users"][username]
         user["failed_count"] += 1
         if user["failed_count"] >= MAX_FAILS_BEFORE_LOCK:
             user["lock_level"] += 1
@@ -202,10 +216,10 @@ class AccountStore:
             self.audit(f"lockout:{int(duration)}s", username)
             return AuthResult(ok=False, reason="locked", retry_after=int(duration))
         self.save()
-        self.audit("login-fail:bad-credentials", username)
-        return AuthResult(ok=False, reason="bad-credentials")
+        self.audit(f"login-fail:{reason}", username)
+        return AuthResult(ok=False, reason=reason)
 
-    # --- додано в ЛР5: керування записами (для авторизованих операцій) -------
+    # --- керування записами (ЛР5) --------------------------------------------
     def list_users(self) -> dict:
         """Імена й ролі (без секретів) — для команди list-users."""
         return {name: list(rec.get("roles", [])) for name, rec in self.data["users"].items()}
@@ -220,15 +234,13 @@ class AccountStore:
         if username not in self.data["users"]:
             raise KeyError(username)
         if OWNER_ROLE not in roles and self.owners() == [username]:
-            # Інваріант сховища, незалежний від того, хто питає: без жодного owner
-            # ніхто більше не зміг би додати користувача чи змінити роль.
             raise ValueError("Не можна позбавити ролі owner останнього власника.")
         self.data["users"][username]["roles"] = list(roles)
         self.audit("set-role", username)
 
     def change_password(self, username: str, new_password: str) -> bytes:
         """Новий пароль → нова сіль і верифікатор; лічильники блокування скидаються.
-        Повертає новий майстер-секрет: ЛР6 переобгортає ним секрет TOTP."""
+        Повертає новий майстер-секрет: ним переобгортається секрет TOTP."""
         if username not in self.data["users"]:
             raise KeyError(username)
         salt = secrets.token_bytes(SALT_BYTES)
@@ -241,3 +253,35 @@ class AccountStore:
         rec["locked_until"] = 0
         self.audit("change-password", username)
         return master
+
+    # --- додано в ЛР6: конверт секрету TOTP і одноразовість кодів -------------
+    def has_totp(self, username: str) -> bool:
+        rec = self.data["users"].get(username) if valid_username(username) else None
+        return bool(rec and rec.get("totp"))
+
+    def get_totp(self, username: str):
+        return self.data["users"][username].get("totp")
+
+    def set_totp(self, username: str, blob) -> None:
+        """Записати (або з blob=None — прибрати) конверт секрету. Новий секрет —
+        нова історія кроків: лічильник одноразовості скидається."""
+        if username not in self.data["users"]:
+            raise KeyError(username)
+        rec = self.data["users"][username]
+        rec["totp"] = blob
+        rec["totp_last_counter"] = None
+        self.audit("set-totp" if blob is not None else "clear-totp", username)
+
+    def rewrap_totp(self, username: str, blob) -> None:
+        """Той самий секрет під новим ключем (ротація, зміна пароля): історія кроків
+        лишається — вже використаний код не стає знову дійсним."""
+        if username not in self.data["users"]:
+            raise KeyError(username)
+        self.data["users"][username]["totp"] = blob
+        self.audit("rewrap-totp", username)
+
+    def get_totp_counter(self, username: str):
+        return self.data["users"][username].get("totp_last_counter")
+
+    def set_totp_counter(self, username: str, counter: int) -> None:
+        self.data["users"][username]["totp_last_counter"] = int(counter)
