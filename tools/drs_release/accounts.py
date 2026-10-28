@@ -1,24 +1,27 @@
-"""drs_release / accounts.py — сховище облікових записів супроводжувача релізів (ЛР4).
+"""drs_release / accounts.py — сховище облікових записів супроводжувача релізів (версія ЛР5).
 
 Призначення цільового файлу в репозиторії: tools/drs_release/accounts.py
+Ця версія ЗАМІНЮЄ версію ЛР4: ядро автентифікації без змін, додано керування записами
+для авторизованих операцій (list_users, get_roles, set_roles, change_password).
 
 Це ОФЛАЙН-інструмент супроводжувача. Він не має нічого спільного з процесом гри й
 НЕ перехоплює введення в грі: пароль вводиться у власному терміналі супроводжувача
-через getpass (як у sudo чи git). Тут — ядро автентифікації:
+через getpass (як у sudo чи git). Ядро автентифікації (ЛР4):
 
   * похідний майстер-секрет        PBKDF2-HMAC-SHA256, 600 000 ітерацій, сіль 16 Б
   * верифікатор пароля             HMAC-SHA256(master, "drs-release/verifier")
   * стала за часом перевірка       hmac.compare_digest
   * блокування після 5 невдач      5 хв, далі подвоєння до 60 хв
   * однакова ціна кожної відмови   PBKDF2 рахується і для невідомого, і для
-                                   заблокованого запису — час відповіді не видає ні
-                                   існування акаунта, ні стану блокування (SR-22)
-  * перевірені імена користувачів  лише ^[A-Za-z0-9_.-]{1,32}$ — керувальні символи
-                                   не потрапляють у журнал аудиту (SR-23)
+                                   заблокованого запису (SR-22)
+  * перевірені імена користувачів  лише ^[A-Za-z0-9_.-]{1,32}$ (SR-23)
   * журнал аудиту                  додавання у файл, окремо від загального повідомлення
 
-Жодних сторонніх залежностей — лише стандартна бібліотека. Ролі (ЛР5), TOTP (ЛР6),
-цілісність файлу (ЛР7) додаються в наступних лабах; поля `roles` і `totp` зарезервовано.
+Рішення «чи можна» тут НЕ приймаються: це робить authz.py у точці виконання команди.
+Сховище лише гарантує інваріант, який не залежить від того, хто питає: у системі завжди
+лишається щонайменше один owner.
+
+Жодних сторонніх залежностей — лише стандартна бібліотека.
 """
 
 from __future__ import annotations
@@ -46,9 +49,10 @@ MAX_FAILS_BEFORE_LOCK = 5
 BASE_LOCK_SECONDS = 5 * 60         # перше блокування — 5 хв
 MAX_LOCK_SECONDS = 60 * 60         # стеля — 60 хв
 
-# --- імена користувачів -----------------------------------------------------
+# --- імена користувачів і ролі ----------------------------------------------
 USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,32}")
-DEFAULT_ROLES = ["viewer"]         # найменші привілеї; застосування ролей — ЛР5
+DEFAULT_ROLES = ["viewer"]         # найменші привілеї
+OWNER_ROLE = "owner"
 
 # Фіксована сіль для фіктивного обчислення, коли користувача не існує: вирівнює
 # час відповіді, щоб не можна було відрізнити «нема такого» від «невірний пароль».
@@ -200,3 +204,40 @@ class AccountStore:
         self.save()
         self.audit("login-fail:bad-credentials", username)
         return AuthResult(ok=False, reason="bad-credentials")
+
+    # --- додано в ЛР5: керування записами (для авторизованих операцій) -------
+    def list_users(self) -> dict:
+        """Імена й ролі (без секретів) — для команди list-users."""
+        return {name: list(rec.get("roles", [])) for name, rec in self.data["users"].items()}
+
+    def get_roles(self, username: str) -> list:
+        return list(self.data["users"][username]["roles"])
+
+    def owners(self) -> list:
+        return [name for name, roles in self.list_users().items() if OWNER_ROLE in roles]
+
+    def set_roles(self, username: str, roles: list) -> None:
+        if username not in self.data["users"]:
+            raise KeyError(username)
+        if OWNER_ROLE not in roles and self.owners() == [username]:
+            # Інваріант сховища, незалежний від того, хто питає: без жодного owner
+            # ніхто більше не зміг би додати користувача чи змінити роль.
+            raise ValueError("Не можна позбавити ролі owner останнього власника.")
+        self.data["users"][username]["roles"] = list(roles)
+        self.audit("set-role", username)
+
+    def change_password(self, username: str, new_password: str) -> bytes:
+        """Новий пароль → нова сіль і верифікатор; лічильники блокування скидаються.
+        Повертає новий майстер-секрет: ЛР6 переобгортає ним секрет TOTP."""
+        if username not in self.data["users"]:
+            raise KeyError(username)
+        salt = secrets.token_bytes(SALT_BYTES)
+        master = derive_master_secret(new_password, salt)
+        rec = self.data["users"][username]
+        rec["salt"] = _b64e(salt)
+        rec["verifier"] = _b64e(compute_verifier(master))
+        rec["failed_count"] = 0
+        rec["lock_level"] = 0
+        rec["locked_until"] = 0
+        self.audit("change-password", username)
+        return master

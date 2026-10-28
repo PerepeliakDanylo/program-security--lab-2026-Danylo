@@ -56,3 +56,4 @@ __pycache__/
 tools/drs_release/drs_release.accounts.json
 tools/drs_release/drs_release.audit.log
 tools/drs_release/.venv/
+tools/drs_release/release.state.json
