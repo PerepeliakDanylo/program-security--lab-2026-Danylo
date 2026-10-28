@@ -16,6 +16,11 @@
 //     ("not responding"). The scan only READS memory through SEH guards; every
 //     WRITE still happens here, on the script thread, after the worker is done.
 //     While the worker runs, this fiber only yields and draws the overlay.
+//
+// Cost on the main thread (1.2): a CALM/COMBAT switch writes every bound field
+// with no system call - tens of microseconds for ~60 weapons. 1.1 spent ~450 ms
+// there (two VirtualQuery calls per field into a multi-gigabyte heap region),
+// which was the hitch felt on every switch.
 
 #pragma once
 
@@ -59,11 +64,13 @@ private:
     bool initialise();
     void waitForGameplay();   // world on screen + settle delay, overlay shows INIT
     bool runResolver();       // scans on a worker thread, keeps yielding to the game
+    void adoptUnlistedGuns(); // script thread: asks the game which unlisted objects are guns
     void tick(std::uint64_t nowMs);
     void handleRequests(std::uint64_t nowMs);
     void enterState(ModState next, std::uint64_t nowMs, const char* reason);
     void requestProfile(bool combat);
     void flushPendingWrite();
+    void refreshHeldWeapon(int playerPedHandle);
     bool versionGatePasses();
     void disablePermanently(const char* reason);
     void publishHotkeys();
@@ -74,7 +81,6 @@ private:
     WeaponPatcher  m_patcher;
 
     ModState      m_state              = ModState::Initialising;
-    ModState      m_stateBeforeDisable = ModState::Calm;
     std::uint64_t m_stateEnteredMs     = 0;
     std::uint64_t m_lastDetectorMs     = 0;
 
@@ -89,6 +95,19 @@ private:
     int  m_consecutiveErrors   = 0;
     bool m_forcedCombat        = false;
     bool m_onlineNotified      = false;
+
+    // The weapon in the player's hands (1.2): what the overlay's second line and
+    // the "weapon in hand" log line show. Natives are asked only when it changes.
+    static constexpr int kSeenCapacity = 64;
+    std::uint32_t m_heldHash                   = 0u;
+    // Set when the value shown for the weapon in hand may have changed (a profile
+    // was written). Without a change of weapon or of values, refreshHeldWeapon()
+    // returns before describing or formatting anything (NFR-01).
+    bool          m_heldDetailDirty            = true;
+    bool          m_heldIsGun                  = false;
+    char          m_heldLabel[64]              = {};
+    std::uint32_t m_seenWeapons[kSeenCapacity] = {};
+    int           m_seenWeaponCount            = 0;
 
     std::atomic<bool> m_requestToggle{false};
     std::atomic<bool> m_requestForceCombat{false};

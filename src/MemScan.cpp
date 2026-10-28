@@ -66,12 +66,37 @@ bool guardedWriteFloat(void* address, float value) noexcept
     }
 }
 
+// Copies at most capacity - 1 characters. Returns how many were copied, or
+// SIZE_MAX if the source faulted part-way (the caller then reports 0).
+std::size_t guardedCopyCString(const char* source, char* dest, std::size_t capacity) noexcept
+{
+    std::size_t copied = 0;
+    __try
+    {
+        while (copied + 1u < capacity)
+        {
+            const char c = source[copied];
+            if (c == '\0')
+            {
+                break;
+            }
+            dest[copied] = c;
+            ++copied;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return static_cast<std::size_t>(-1);
+    }
+    return copied;
+}
+
 // Scans one region for a set of 4-byte values. Kept as a leaf so the whole
 // inner loop sits inside one __try: taking the guard per dword would cost more
 // than the comparison itself.
 //
 // maybeTable is a 64 KiB lookup indexed by the low 16 bits of the candidate.
-// It turns "is this dword one of my two dozen hashes" into one cached byte read.
+// It turns "is this dword one of my few dozen hashes" into one cached byte read.
 std::size_t guardedScanRegion(const std::uint8_t* base,
                               std::size_t regionSize,
                               const std::uint8_t* maybeTable,
@@ -113,6 +138,47 @@ std::size_t guardedScanRegion(const std::uint8_t* base,
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
         // Region vanished mid-scan. Keep whatever was collected and move on.
+    }
+    return hitCount;
+}
+
+// Same idea for 8-byte values at 8-byte aligned positions. Region bases are page
+// aligned and chunk offsets are multiples of 16 MB, so `base` is always aligned.
+std::size_t guardedScanQwordRegion(const std::uint8_t* base,
+                                   std::size_t regionSize,
+                                   const std::uint64_t* values,
+                                   std::size_t valueCount,
+                                   std::uint8_t** hitAddresses,
+                                   std::size_t hitCapacity) noexcept
+{
+    std::size_t hitCount = 0;
+    __try
+    {
+        const std::size_t steps = regionSize / 8u;
+        const std::uint64_t* cursor = reinterpret_cast<const std::uint64_t*>(base);
+        const std::uint64_t first = values[0];
+        for (std::size_t i = 0; i < steps; ++i)
+        {
+            const std::uint64_t candidate = cursor[i];
+            bool match = (candidate == first);
+            for (std::size_t v = 1; !match && v < valueCount; ++v)
+            {
+                match = (candidate == values[v]);
+            }
+            if (!match)
+            {
+                continue;
+            }
+            if (hitCount < hitCapacity)
+            {
+                hitAddresses[hitCount] = const_cast<std::uint8_t*>(
+                    reinterpret_cast<const std::uint8_t*>(cursor + i));
+                ++hitCount;
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
     }
     return hitCount;
 }
@@ -177,9 +243,12 @@ bool isWritableProtection(DWORD protect) noexcept
     {
         return false;
     }
-    const DWORD writable = PAGE_READWRITE | PAGE_WRITECOPY |
-                           PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    return (protect & writable) != 0u;
+    // Copy-on-write variants exist only for image and mapped sections, never for
+    // the private heap that holds weapon data, so they are not accepted. An
+    // executable-writable heap is unusual but possible, and writing a float into
+    // it is no different from a plain read-write page; it is accepted as-is.
+    // Protection is never CHANGED by this plugin (1.2).
+    return (protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) != 0u;
 }
 
 bool protectionAllowsRead(DWORD protect) noexcept
@@ -283,6 +352,27 @@ bool MemScan::writeFloat(void* address, float value) noexcept
     return address != nullptr && guardedWriteFloat(address, value);
 }
 
+std::size_t MemScan::readCString(const char* source, char* dest, std::size_t capacity) noexcept
+{
+    if (dest == nullptr || capacity == 0)
+    {
+        return 0;
+    }
+    dest[0] = '\0';
+    if (source == nullptr)
+    {
+        return 0;
+    }
+    const std::size_t copied = guardedCopyCString(source, dest, capacity);
+    if (copied == static_cast<std::size_t>(-1))
+    {
+        dest[0] = '\0';
+        return 0;
+    }
+    dest[copied] = '\0';
+    return copied;
+}
+
 bool MemScan::isCommittedReadable(const void* address, std::size_t bytes) noexcept
 {
     if (address == nullptr)
@@ -315,6 +405,17 @@ bool MemScan::isInsideMainModule(const void* address) noexcept
     return mainModuleBounds().contains(address);
 }
 
+std::uint64_t MemScan::mainModuleOffset(const void* address) noexcept
+{
+    const ModuleBounds& bounds = mainModuleBounds();
+    if (!bounds.contains(address))
+    {
+        return 0u;
+    }
+    return static_cast<std::uint64_t>(reinterpret_cast<const std::uint8_t*>(address) -
+                                      bounds.base);
+}
+
 bool MemScan::isOnCurrentThreadStack(const void* address) noexcept
 {
     // The TIB gives the current thread's stack limits directly; no guessing.
@@ -329,9 +430,9 @@ bool MemScan::isOnCurrentThreadStack(const void* address) noexcept
     return limit != nullptr && base != nullptr && p >= limit && p < base;
 }
 
-bool MemScan::isAcceptableTarget(const void* address, std::size_t bytes) noexcept
+bool MemScan::passesStaticChecks(const void* address) noexcept
 {
-    if (!isCommittedReadable(address, bytes))
+    if (address == nullptr)
     {
         return false;
     }
@@ -343,40 +444,16 @@ bool MemScan::isAcceptableTarget(const void* address, std::size_t bytes) noexcep
     {
         return false;
     }
-    if ((reinterpret_cast<std::uintptr_t>(address) % alignof(float)) != 0u)
-    {
-        return false;
-    }
-    return true;
+    return (reinterpret_cast<std::uintptr_t>(address) % alignof(float)) == 0u;
 }
 
-bool MemScan::isWritable(const void* address, std::size_t bytes) noexcept
-{
-    if (address == nullptr)
-    {
-        return false;
-    }
-    MEMORY_BASIC_INFORMATION mbi = {};
-    if (VirtualQuery(address, &mbi, sizeof(mbi)) == 0)
-    {
-        return false;
-    }
-    if (mbi.State != MEM_COMMIT || !isWritableProtection(mbi.Protect))
-    {
-        return false;
-    }
-    const std::uint8_t* start = reinterpret_cast<const std::uint8_t*>(address);
-    const std::uint8_t* regionEnd =
-        reinterpret_cast<const std::uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
-    return start + bytes <= regionEnd;
-}
-
-std::size_t MemScan::spanFromRegions(const std::uint8_t* address, std::size_t cap) const noexcept
+const MemoryRegion* MemScan::regionFor(const void* address) const noexcept
 {
     if (address == nullptr || m_regions.empty())
     {
-        return 0;
+        return nullptr;
     }
+    const std::uint8_t* p = reinterpret_cast<const std::uint8_t*>(address);
     // m_regions is built by walking the address space upwards, so it is sorted
     // by base. Find the last region whose base is <= address.
     std::size_t lo = 0;
@@ -384,20 +461,45 @@ std::size_t MemScan::spanFromRegions(const std::uint8_t* address, std::size_t ca
     while (lo < hi)
     {
         const std::size_t mid = lo + (hi - lo) / 2u;
-        if (m_regions[mid].base <= address) { lo = mid + 1u; } else { hi = mid; }
+        if (m_regions[mid].base <= p) { lo = mid + 1u; } else { hi = mid; }
     }
     if (lo == 0)
     {
-        return 0;
+        return nullptr;
     }
     const MemoryRegion& region = m_regions[lo - 1u];
-    const std::uint8_t* end = region.base + region.size;
-    if (address >= end)
+    if (p >= region.base + region.size)
+    {
+        return nullptr;
+    }
+    return &region;
+}
+
+std::size_t MemScan::spanFromRegions(const std::uint8_t* address, std::size_t cap) const noexcept
+{
+    const MemoryRegion* region = regionFor(address);
+    if (region == nullptr)
     {
         return 0;
     }
+    const std::uint8_t* end = region->base + region->size;
     const std::size_t span = static_cast<std::size_t>(end - address);
     return (span > cap) ? cap : span;
+}
+
+bool MemScan::regionAllowsWrite(const void* address, std::size_t bytes) const noexcept
+{
+    const MemoryRegion* region = regionFor(address);
+    if (region == nullptr)
+    {
+        return false;
+    }
+    const std::uint8_t* start = reinterpret_cast<const std::uint8_t*>(address);
+    if (start + bytes > region->base + region->size)
+    {
+        return false;
+    }
+    return isWritableProtection(static_cast<DWORD>(region->protect));
 }
 
 bool MemScan::buildRegionList(bool includeMapped, std::uint64_t maxScanBytes)
@@ -411,8 +513,8 @@ bool MemScan::buildRegionList(bool includeMapped, std::uint64_t maxScanBytes)
     std::uint8_t* cursor  = reinterpret_cast<std::uint8_t*>(systemInfo.lpMinimumApplicationAddress);
     std::uint8_t* maximum = reinterpret_cast<std::uint8_t*>(systemInfo.lpMaximumApplicationAddress);
 
-    std::size_t skippedImage  = 0;
-    std::size_t skippedMapped = 0;
+    std::size_t   skippedImage         = 0;
+    std::size_t   skippedMapped        = 0;
     std::size_t   skippedUncached      = 0;
     std::uint64_t skippedUncachedBytes = 0;
 
@@ -452,9 +554,10 @@ bool MemScan::buildRegionList(bool includeMapped, std::uint64_t maxScanBytes)
                     m_scannableBytes + regionSize <= maxScanBytes)
                 {
                     MemoryRegion region;
-                    region.base = regionBase;
-                    region.size = regionSize;
-                    region.type = static_cast<std::uint32_t>(mbi.Type);
+                    region.base    = regionBase;
+                    region.size    = regionSize;
+                    region.type    = static_cast<std::uint32_t>(mbi.Type);
+                    region.protect = static_cast<std::uint32_t>(mbi.Protect);
                     m_regions.push_back(region);
                     m_scannableBytes += regionSize;
                 }
@@ -518,18 +621,21 @@ std::vector<ScanResult> MemScan::findDwords(const std::vector<ScanRequest>& requ
         maybeTable[value & 0xFFFFu] = 1u;
     }
 
-    // Per-region hit buffer. 4096 is far more than a sane number of matches for
-    // a couple of dozen hashes in one region; overflow just truncates that region.
-    constexpr std::size_t kRegionHitCapacity = 4096;
-    std::vector<std::uint8_t*> hitAddresses(kRegionHitCapacity, nullptr);
-    std::vector<std::uint32_t> hitValueIndex(kRegionHitCapacity, 0u);
+    // Per-chunk hit buffer. Common weapon hashes appear thousands of times in
+    // memory (every ped loadout, every weapon object), and the one structure we
+    // need may sit behind all of them - 1.1 kept only the first 64 hits per name
+    // and lost the real CWeaponInfo of the base Cattleman that way.
+    constexpr std::size_t kChunkHitCapacity = 65536;
+    std::vector<std::uint8_t*> hitAddresses(kChunkHitCapacity, nullptr);
+    std::vector<std::uint32_t> hitValueIndex(kChunkHitCapacity, 0u);
 
     const ULONGLONG startTicks = GetTickCount64();
     ULONGLONG lastProgressTicks = startTicks;
+    std::size_t fullChunks = 0;   // chunks that filled the hit buffer (hits beyond it are lost)
 
     // Cooperative yield granularity. The scan is a background job: between
     // chunks it hands the core back to any ready thread, so a single huge region
-    // never hogs memory bandwidth for seconds at a time (D-3).
+    // never hogs memory bandwidth for seconds at a time.
     constexpr std::size_t kChunkBytes = 16u * 1024u * 1024u;
 
     for (const MemoryRegion& region : m_regions)
@@ -544,7 +650,11 @@ std::vector<ScanResult> MemScan::findDwords(const std::vector<ScanRequest>& requ
                                                         values.data(), values.size(),
                                                         hitAddresses.data(),
                                                         hitValueIndex.data(),
-                                                        kRegionHitCapacity);
+                                                        kChunkHitCapacity);
+            if (found >= kChunkHitCapacity)
+            {
+                ++fullChunks;
+            }
 
             for (std::size_t i = 0; i < found; ++i)
             {
@@ -580,8 +690,64 @@ std::vector<ScanResult> MemScan::findDwords(const std::vector<ScanRequest>& requ
     DRS_INFO("memscan: pass complete, %.1f MB in %llu ms",
              static_cast<double>(bytesScannedOut) / (1024.0 * 1024.0),
              static_cast<unsigned long long>(GetTickCount64() - startTicks));
+    if (fullChunks != 0u)
+    {
+        // Not an error: the class scan (WeaponPatcher) recovers any weapon
+        // structure lost here. Logged so a report shows it happened.
+        DRS_INFO("memscan: %zu chunk(s) had more than %zu hits; the extra hits were not kept",
+                 fullChunks, kChunkHitCapacity);
+    }
 
     return results;
+}
+
+std::vector<std::uint8_t*> MemScan::findQwords(const std::uint64_t* values,
+                                               std::size_t valueCount,
+                                               std::size_t maxHits,
+                                               std::uint64_t& bytesScannedOut) const
+{
+    std::vector<std::uint8_t*> hits;
+    bytesScannedOut = 0;
+    if (values == nullptr || valueCount == 0 || valueCount > 4 || m_regions.empty())
+    {
+        return hits;
+    }
+
+    constexpr std::size_t kChunkHitCapacity = 8192;
+    std::vector<std::uint8_t*> buffer(kChunkHitCapacity, nullptr);
+    constexpr std::size_t kChunkBytes = 16u * 1024u * 1024u;
+
+    const ULONGLONG startTicks = GetTickCount64();
+
+    for (const MemoryRegion& region : m_regions)
+    {
+        for (std::size_t offset = 0; offset < region.size; offset += kChunkBytes)
+        {
+            const std::size_t remaining = region.size - offset;
+            const std::size_t chunk     = (remaining < kChunkBytes) ? remaining : kChunkBytes;
+
+            const std::size_t found = guardedScanQwordRegion(region.base + offset, chunk,
+                                                             values, valueCount,
+                                                             buffer.data(),
+                                                             kChunkHitCapacity);
+            for (std::size_t i = 0; i < found && hits.size() < maxHits; ++i)
+            {
+                hits.push_back(buffer[i]);
+            }
+            SwitchToThread();
+        }
+        bytesScannedOut += region.size;
+        if (hits.size() >= maxHits)
+        {
+            break;
+        }
+    }
+
+    DRS_INFO("memscan: class pass complete, %.1f MB in %llu ms, %zu object(s)",
+             static_cast<double>(bytesScannedOut) / (1024.0 * 1024.0),
+             static_cast<unsigned long long>(GetTickCount64() - startTicks),
+             hits.size());
+    return hits;
 }
 
 std::vector<std::uint8_t*> MemScan::findAscii(const char* text, std::size_t maxHits) const

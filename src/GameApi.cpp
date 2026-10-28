@@ -3,11 +3,12 @@
 // ============================================================================
 //  READ BEFORE BUILDING
 //
-//  Every native called in this file was checked on 2026-09-28 against the rdr3
-//  native database (https://alloc8or.re/rdr3/nativedb/ — rdr3, NOT rdr2, that
-//  URL does not exist) and is recorded in docs/NATIVES.md with its hash and
-//  exact signature. The expected number of compile errors here is therefore
-//  zero.
+//  Every native called in this file was checked against the rdr3 native
+//  database (https://alloc8or.re/rdr3/nativedb/ — rdr3, NOT rdr2, that URL does
+//  not exist) and is recorded in docs/NATIVES.md with its hash and exact
+//  signature. The natives added in 1.2 (section 3.6 there) were checked on
+//  2026-10-24 against the generated natives.h this project builds with. The
+//  expected number of compile errors here is therefore zero.
 //
 //  If one does appear, it means the natives.h you generated differs from what
 //  was checked. Procedure, in this order:
@@ -24,12 +25,14 @@
 
 #include "GameApi.h"
 #include "Logger.h"
+#include "MemScan.h"
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <vector>
+#include <cstring>
 
 // --- SDK ---------------------------------------------------------------------
 // Three third-party headers, NOT in this repository; docs/BUILD.md section 2
@@ -76,9 +79,7 @@
 #define DRS_HAVE_ENTITY_COORDS 1
 #endif
 #ifndef DRS_HAVE_DRAW_TEXT
-#define DRS_HAVE_DRAW_TEXT 1      // UIDEBUG::_BG_*, exist on 1491; the call ORDER
-                                  // is still unconfirmed, so the overlay stays
-                                  // off in the shipped INI (OnScreenState = 0)
+#define DRS_HAVE_DRAW_TEXT 1      // UIDEBUG::_BG_*, confirmed in game 2026-10-19
 #endif
 
 namespace drs {
@@ -109,6 +110,47 @@ float distanceSquared(const Vector3& a, const Vector3& b)
     const float dz = a.z - b.z;
     return dx * dx + dy * dy + dz * dz;
 }
+
+// A person the player is attacking: exists, is a ped, is human, is not the
+// player, and is either alive or was killed by the player - a one-shot kill can
+// mark the target dead in the very frame the shot is seen, and that is still an
+// attack on a person. Animals are left out on purpose: shooting a deer is the one
+// situation this mod must keep calm.
+//   PED::GET_PED_SOURCE_OF_DEATH 0x93C8B64DEB84728C Entity (Ped)
+bool isHumanVictim(Entity entity, int playerPedHandle)
+{
+    if (entity == 0 || entity == playerPedHandle)
+    {
+        return false;
+    }
+    if (ENTITY::DOES_ENTITY_EXIST(entity) == 0)
+    {
+        return false;
+    }
+    if (ENTITY::IS_ENTITY_A_PED(entity) == 0)
+    {
+        return false;
+    }
+    if (PED::IS_PED_HUMAN(entity) == 0)
+    {
+        return false;
+    }
+    if (ENTITY::IS_ENTITY_DEAD(entity) == 0)
+    {
+        return true;
+    }
+    return PED::GET_PED_SOURCE_OF_DEATH(entity) == playerPedHandle;
+}
+
+// The ped pool has no documented upper bound for story mode; 1024 handles is
+// far above anything RDR2 streams in at once and costs 4 KB, once.
+constexpr int kPedBufferSize = 1024;
+
+struct NearPed
+{
+    float distanceSquared = 0.0f;
+    int   handle          = 0;
+};
 
 } // namespace
 
@@ -199,6 +241,27 @@ bool isPlayerTargettingAnything(int player)
     return PLAYER::IS_PLAYER_TARGETTING_ANYTHING(player) != 0;
 }
 
+bool isPlayerTargetingLivingHuman(int player, int playerPedHandle)
+{
+    // PLAYER::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT 0xA6817C110B830EAD BOOL (Player, Entity&)
+    // PLAYER::GET_PLAYER_TARGET_ENTITY            0xAE663DDD99C8A670 BOOL (Player, Entity&)
+    // Free aim covers the crosshair; the target entity covers soft lock-on. The
+    // generated header takes the out parameter by reference (no &).
+    Entity aimed = 0;
+    if (PLAYER::GET_ENTITY_PLAYER_IS_FREE_AIMING_AT(player, aimed) != 0 &&
+        isHumanVictim(aimed, playerPedHandle))
+    {
+        return true;
+    }
+    Entity locked = 0;
+    if (PLAYER::GET_PLAYER_TARGET_ENTITY(player, locked) != 0 &&
+        isHumanVictim(locked, playerPedHandle))
+    {
+        return true;
+    }
+    return false;
+}
+
 bool hasEntityBeenDamagedByAnyPed(int entity)
 {
     return ENTITY::HAS_ENTITY_BEEN_DAMAGED_BY_ANY_PED(entity) != 0;
@@ -276,23 +339,28 @@ bool isDeadEyeActive(int player)
 #endif
 }
 
-int hostilePedsNearPlayer(int playerPedHandle, float radius, int maxPeds)
+int hostilePedsNearPlayer(int playerPedHandle, float radius, int maxNearest)
 {
-    if (maxPeds <= 0)
+    if (maxNearest <= 0)
     {
         return 0;
     }
 
-    // One buffer for the life of the plugin: this runs on the hot path at
-    // PedScanHz and must not allocate (NFR-01). 256 is the INI's upper bound for
-    // MaxPedsScanned, so the buffer can never be too small.
-    static int handles[256];
-    const int capacity = (maxPeds < 256) ? maxPeds : 256;
-    const int found = worldGetAllPeds(handles, capacity);
+    // Two buffers for the life of the plugin: this runs at PedScanHz and must
+    // not allocate (NFR-01).
+    static int     handles[kPedBufferSize];
+    static NearPed nearby[kPedBufferSize];
+
+    // The WHOLE list, every time. worldGetAllPeds fills the array in pool
+    // order, not by distance: 1.1 asked for MaxPedsScanned (32) entries and so
+    // never saw a hostile that happened to sit in pool slot 33 or later - which
+    // is why a spawned enemy was sometimes not detected at all in a busy area.
+    const int found = worldGetAllPeds(handles, kPedBufferSize);
     if (found <= 0)
     {
         return 0;
     }
+    const int count = (found < kPedBufferSize) ? found : kPedBufferSize;
 
 #if DRS_HAVE_ENTITY_COORDS
     const Vector3 playerPosition = ENTITY::GET_ENTITY_COORDS(playerPedHandle, TRUE, FALSE);
@@ -301,35 +369,58 @@ int hostilePedsNearPlayer(int playerPedHandle, float radius, int maxPeds)
     (void)radius;
 #endif
 
-    int hostiles = 0;
-    for (int i = 0; i < found && i < capacity; ++i)
+    int nearCount = 0;
+    for (int i = 0; i < count; ++i)
     {
         const int candidate = handles[i];
         if (candidate == 0 || candidate == playerPedHandle)
         {
             continue;
         }
-        if (!ENTITY::DOES_ENTITY_EXIST(candidate))
-        {
-            continue;
-        }
-        if (ENTITY::IS_ENTITY_DEAD(candidate) != 0)
+        if (ENTITY::DOES_ENTITY_EXIST(candidate) == 0)
         {
             continue;
         }
 
+        // Distance first: in a town most of the list is far away, and one
+        // coordinate read is cheaper than the checks that follow.
+        float d2 = 0.0f;
 #if DRS_HAVE_ENTITY_COORDS
         const Vector3 position = ENTITY::GET_ENTITY_COORDS(candidate, TRUE, FALSE);
-        if (distanceSquared(playerPosition, position) > radiusSquared)
+        d2 = distanceSquared(playerPosition, position);
+        if (!(d2 <= radiusSquared))   // also rejects NaN
         {
             continue;
         }
 #endif
+        if (ENTITY::IS_ENTITY_DEAD(candidate) != 0)
+        {
+            continue;
+        }
+        nearby[nearCount].distanceSquared = d2;
+        nearby[nearCount].handle          = candidate;
+        ++nearCount;
+    }
 
+    // Only the nearest maxNearest are asked the combat question. nth_element is
+    // linear and allocation-free; the order inside the kept part is irrelevant.
+    int evaluate = nearCount;
+    if (nearCount > maxNearest)
+    {
+        std::nth_element(nearby, nearby + maxNearest, nearby + nearCount,
+                         [](const NearPed& a, const NearPed& b) {
+                             return a.distanceSquared < b.distanceSquared;
+                         });
+        evaluate = maxNearest;
+    }
+
+    int hostiles = 0;
+    for (int i = 0; i < evaluate; ++i)
+    {
         // The direction matters: "is this ped fighting the player", not the
         // reverse. IS_PED_IN_COMBAT(a, b) answers "is a in combat with b", and
         // its second parameter is a Ped handle, never a boolean.
-        if (PED::IS_PED_IN_COMBAT(candidate, playerPedHandle) != 0)
+        if (PED::IS_PED_IN_COMBAT(nearby[i].handle, playerPedHandle) != 0)
         {
             ++hostiles;
         }
@@ -347,6 +438,39 @@ std::uint32_t currentWeaponHash(int ped)
     // one of the two and writes the weapon hash over a pointer.
     WEAPON::GET_CURRENT_PED_WEAPON(ped, weapon, TRUE, 0, FALSE);
     return static_cast<std::uint32_t>(weapon);
+}
+
+bool isWeaponAGun(std::uint32_t weaponHash)
+{
+    // WEAPON::IS_WEAPON_A_GUN 0x705BE297EEBDB95D BOOL (Hash)
+    // "Returns true if CWeaponInfoFlags::Flags::Gun is set."
+    if (weaponHash == 0u)
+    {
+        return false;
+    }
+    return WEAPON::IS_WEAPON_A_GUN(static_cast<Hash>(weaponHash)) != 0;
+}
+
+bool weaponLabel(std::uint32_t weaponHash, char* out, std::size_t capacity)
+{
+    // WEAPON::_GET_WEAPON_NAME 0x89CF5FF3D363311E const char* (Hash)
+    // The returned pointer belongs to the game. It is copied out at once through
+    // a guarded read, so even a wrong pointer can only produce "no label".
+    if (out == nullptr || capacity == 0)
+    {
+        return false;
+    }
+    out[0] = '\0';
+    if (weaponHash == 0u)
+    {
+        return false;
+    }
+    const char* label = WEAPON::_GET_WEAPON_NAME(static_cast<Hash>(weaponHash));
+    if (MemScan::readCString(label, out, capacity) == 0)
+    {
+        return false;
+    }
+    return std::strcmp(out, "WNS_INVALID") != 0;
 }
 
 bool drawTextAvailable()
@@ -373,11 +497,9 @@ void drawDebugText(const char* text, float x, float y)
     // its text argument must come from VAR_STRING rather than being a plain
     // pointer — that requirement is documented on the native itself.
     //
-    // The three names, their hashes and their signatures are confirmed against
-    // the rdr3 database. What is NOT confirmed is the call ORDER and the
-    // VAR_STRING flags, which is why the shipped INI keeps OnScreenState = 0
-    // and UNVERIFIED.md carries U-04 for it. Worst case here is an overlay that
-    // draws nothing: no memory is touched and no game state is changed.
+    // Call order and VAR_STRING flags confirmed in game on 1.0.1491.50
+    // (2026-10-19). The text lives for one frame, so the caller draws it every
+    // frame (Overlay.h).
     UIDEBUG::_BG_SET_TEXT_SCALE(0.0f, 0.5f);
     UIDEBUG::_BG_SET_TEXT_COLOR(255, 255, 255, 255);
     UIDEBUG::_BG_DISPLAY_TEXT(MISC::VAR_STRING(10, "LITERAL_STRING", text), x, y);

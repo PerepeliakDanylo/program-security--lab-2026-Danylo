@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -62,6 +63,13 @@ bool isPedInMeleeCombat(int ped);
 bool isPlayerFreeAiming(int player);
 bool isPlayerTargettingAnything(int player);
 
+// True when the entity the player is free-aiming at, or has locked on to, is a
+// human ped other than the player that is alive or was killed by the player (a
+// one-shot kill can mark the target dead in the frame the shot is seen). Animals
+// never count. Called only on ticks where the player is shooting
+// (CombatDetector::sampleTick), so its natives are not on every frame.
+bool isPlayerTargetingLivingHuman(int player, int playerPed);
+
 bool hasEntityBeenDamagedByAnyPed(int entity);
 void clearEntityDamageFlag(int entity);
 
@@ -77,13 +85,24 @@ bool wantedCheckAvailable();
 bool isDeadEyeActive(int player);
 bool deadEyeCheckAvailable();
 
-// Counts peds that are in combat AGAINST the player, within `radius`, looking at
-// no more than `maxPeds` candidates. Note the direction of the test: the
-// question is whether the other ped fights the player, not the other way round.
-int hostilePedsNearPlayer(int playerPed, float radius, int maxPeds);
+// Counts peds that are in combat AGAINST the player, within `radius`. The whole
+// ped list is read every time (1.1 read only the first MaxPedsScanned entries of
+// the pool, in pool order, and missed hostiles whenever more peds were loaded -
+// in a camp or a town); `maxNearest` then limits how many of the NEAREST peds
+// are asked the combat question. Direction of the test: does the other ped fight
+// the player, not the other way round.
+int hostilePedsNearPlayer(int playerPed, float radius, int maxNearest);
 
 // Hash of the weapon currently in the player's hands, 0 if unavailable.
 std::uint32_t currentWeaponHash(int ped);
+
+// WEAPON::IS_WEAPON_A_GUN - true if the weapon info carries the Gun flag.
+bool isWeaponAGun(std::uint32_t weaponHash);
+
+// WEAPON::_GET_WEAPON_NAME - the weapon's text label, e.g. "WNS_REVOLVER_CATTLEMAN"
+// ("WNS_INVALID" for an unknown hash). Copied into `out` through a guarded read.
+// Returns false if no usable label came back.
+bool weaponLabel(std::uint32_t weaponHash, char* out, std::size_t capacity);
 
 // On-screen text, used only by the optional debug overlay.
 void drawDebugText(const char* text, float x, float y);

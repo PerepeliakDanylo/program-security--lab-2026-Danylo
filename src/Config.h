@@ -10,6 +10,12 @@
 // See docs/DESIGN.md section 3 — that channel was removed by construction, not
 // by validation after the fact.
 //
+// Keys added in 1.2 (all optional, an INI without them gets the defaults below):
+//   [Signals] AttackingHumans, ShootingSustainsCombat
+//   [Memory]  IncludeUnlistedGuns, PatchSectionedReload
+// MaxPedsScanned keeps its name but now means "how many of the NEAREST peds in
+// ThreatRadius are checked"; the ped list itself is always read in full.
+//
 // No dependency on the ScriptHookRDR2 SDK.
 
 #pragma once
@@ -61,21 +67,23 @@ struct GeneralSettings
     int   detectorHz          = 4;
     int   pedScanHz           = 2;
     float threatRadius        = 80.0f;
-    int   maxPedsScanned      = 32;
-    float damageMemorySeconds = 8.0f;
+    int   maxPedsScanned      = 32;     // nearest N peds inside threatRadius (1.2)
+    float damageMemorySeconds = 8.0f;   // also how long "you attacked a person" lasts
     bool  disableInOnline     = true;
     bool  ignoreVersionCheck  = false;
 };
 
 struct SignalSettings
 {
-    bool playerShooting = true;
-    bool playerAiming   = true;
-    bool melee          = true;
-    bool recentDamage   = true;
-    bool hostileNearby  = true;
-    bool wantedByLaw    = true;
-    bool deadEye        = false;
+    bool playerShooting         = true;
+    bool playerAiming           = true;
+    bool melee                  = true;
+    bool recentDamage           = true;
+    bool hostileNearby          = true;
+    bool wantedByLaw            = true;
+    bool deadEye                = false;
+    bool attackingHumans        = true;   // 1.2: a shot at a living person counts
+    bool shootingSustainsCombat = true;   // 1.2: own shots keep an existing fight on
 };
 
 struct ProfileSettings
@@ -103,12 +111,14 @@ struct DefaultsSettings
 
 struct MemorySettings
 {
-    std::uint32_t maxOffsetWindow     = 4096u;
-    std::uint32_t offsetStep          = 4u;
-    int           minConsensusWeapons = 12;
-    float         consensusMargin     = 1.5f;
-    std::uint64_t maxScanBytes        = 0ull;   // 0 = no limit
-    bool          patchAllConditions  = true;
+    std::uint32_t maxOffsetWindow      = 4096u;
+    std::uint32_t offsetStep           = 4u;
+    int           minConsensusWeapons  = 12;
+    float         consensusMargin      = 1.5f;
+    std::uint64_t maxScanBytes         = 0ull;   // 0 = no limit
+    bool          patchAllConditions   = true;
+    bool          includeUnlistedGuns  = true;   // 1.2: switch guns found by class
+    bool          patchSectionedReload = false;  // 1.2: off - see DESIGN.md 3.8
 
     // -1 means "auto". Any other value must lie inside [0, maxOffsetWindow).
     std::int32_t  forceAnimOffset = -1;

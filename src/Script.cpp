@@ -1,6 +1,7 @@
 #include "Script.h"
 #include "GameApi.h"
 #include "GameBuild.h"
+#include "Joaat.h"
 #include "Logger.h"
 #include "Overlay.h"
 
@@ -8,16 +9,20 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <memory>
+#include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 namespace drs {
 
 namespace {
 
-constexpr const char*   kPluginVersion  = "1.1.0";
+constexpr const char*   kPluginVersion  = "1.2.0";
 constexpr int           kMaxTickErrors  = 10;
 
 // Start-up timing (1.1). Weapon data is parsed at game boot, long before any
@@ -29,6 +34,50 @@ constexpr std::uint64_t kSettleDelayMs  = 5000;
 constexpr std::uint64_t kReadyTimeoutMs = 120000;   // never wait forever
 
 constexpr const char*   kScanLabel      = "SCANNING";
+
+constexpr std::uint32_t kUnarmed        = joaat("weapon_unarmed");
+
+bool startsWith(const char* text, const char* prefix)
+{
+    return text != nullptr && std::strncmp(text, prefix, std::strlen(prefix)) == 0;
+}
+
+// Mounted and emplaced guns: their "reload" is a crew or cool-down animation, not
+// the player's hands. Checked on the game's own label in addition to the hash
+// list in WeaponTable.h, because the exact turret names are not all known.
+bool labelLooksMounted(const char* label)
+{
+    return std::strstr(label, "TURRET") != nullptr || std::strstr(label, "CANNON") != nullptr ||
+           std::strstr(label, "GATLING") != nullptr || std::strstr(label, "MAXIM") != nullptr;
+}
+
+// The game's label for a weapon is "WNS_" + the rest of its internal name in the
+// cases checked so far ("WNS_INVALID" for an unknown hash). "WEAPON_" + that rest
+// is therefore the likely internal name; hashing it back tells whether it IS.
+// Either way it is used to look up an INI section by prefix, so an unknown
+// double-action revolver still gets the double-action section.
+std::string nameFromLabel(std::uint32_t hash, const char* label, bool& verified)
+{
+    verified = false;
+    if (startsWith(label, "WNS_") && label[4] != '\0')
+    {
+        std::string name = "WEAPON_";
+        name += (label + 4);
+        for (char& c : name)
+        {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        verified = (joaat(name.c_str()) == hash);   // joaat lower-cases by itself
+        return name;
+    }
+    if (label != nullptr && label[0] != '\0')
+    {
+        return std::string(label);
+    }
+    char buffer[16] = {};
+    _snprintf_s(buffer, sizeof(buffer), _TRUNCATE, "0x%08X", hash);
+    return std::string(buffer);
+}
 
 } // namespace
 
@@ -80,6 +129,7 @@ void Script::disablePermanently(const char* reason)
     m_state          = ModState::DisabledPermanent;
     m_stateEnteredMs = GetTickCount64();
     m_pendingWrite   = false;
+    Overlay::instance().setDetail(nullptr);
 }
 
 bool Script::versionGatePasses()
@@ -234,6 +284,14 @@ bool Script::initialise()
         return false;
     }
 
+    // 4. Back on the script thread: the natives that tell which of the unlisted
+    //    weapon-info objects are guns, then one line per weapon with the values
+    //    it will get, so a log is enough to check every weapon's behaviour.
+    adoptUnlistedGuns();
+    m_patcher.logPlan(m_config);
+    DRS_INFO("start-up: %d weapon structures for %d names will be switched",
+             m_patcher.resolvedWeapons(), m_patcher.resolvedNames());
+
     m_detector.configure(m_config);
 
     m_state          = ModState::Calm;
@@ -303,6 +361,71 @@ bool Script::runResolver()
     return job->ok;
 }
 
+void Script::adoptUnlistedGuns()
+{
+    const std::vector<std::uint32_t> hashes = m_patcher.unlistedHashes();
+    if (hashes.empty())
+    {
+        m_patcher.releaseUnlisted();
+        return;
+    }
+
+    // A few hundred names at most, two cheap natives each, once per session.
+    std::vector<UnlistedGun> guns;
+    int  notGuns   = 0;
+    int  excluded  = 0;
+    char label[64] = {};
+
+    for (const std::uint32_t hash : hashes)
+    {
+        if (isNeverManaged(hash))
+        {
+            ++excluded;
+            continue;
+        }
+        if (!game::isWeaponAGun(hash))
+        {
+            ++notGuns;
+            continue;
+        }
+        const bool haveLabel = game::weaponLabel(hash, label, sizeof(label));
+        if (haveLabel && labelLooksMounted(label))
+        {
+            ++excluded;
+            continue;
+        }
+
+        UnlistedGun gun;
+        gun.hash = hash;
+        if (haveLabel)
+        {
+            gun.label = label;
+        }
+        gun.name = nameFromLabel(hash, haveLabel ? label : nullptr, gun.nameVerified);
+        guns.push_back(gun);
+    }
+
+    int adopted = 0;
+    if (m_config.memory().includeUnlistedGuns)
+    {
+        adopted = m_patcher.adoptUnlisted(guns, m_config);
+    }
+    else
+    {
+        for (const UnlistedGun& gun : guns)
+        {
+            DRS_INFO("unlisted gun left alone (IncludeUnlistedGuns = 0): %s (label %s)",
+                     gun.name.c_str(), gun.label.empty() ? "none" : gun.label.c_str());
+        }
+    }
+
+    DRS_INFO("unlisted: %zu other weapon-info names, %zu of them guns (%d structure(s) "
+             "adopted), %d not guns, %d excluded (mounted guns, bows)",
+             hashes.size(), guns.size(), adopted, notGuns, excluded);
+
+    m_patcher.releaseUnlisted();
+}
+
 void Script::requestProfile(bool combat)
 {
     m_pendingWrite       = true;
@@ -317,6 +440,8 @@ void Script::flushPendingWrite()
         return;
     }
 
+    // Not in the middle of a reload: changing the rate mid-animation would make
+    // that one reload a mix of both speeds.
     const int ped = game::playerPed();
     if (ped != 0 && game::isPedReloading(ped))
     {
@@ -329,8 +454,9 @@ void Script::flushPendingWrite()
     }
 
     m_patcher.applyProfile(m_pendingWriteCombat, m_config);
-    m_pendingWrite   = false;
-    m_deferralLogged = false;
+    m_pendingWrite    = false;
+    m_deferralLogged  = false;
+    m_heldDetailDirty = true;   // the rate shown for the weapon in hand changed
 }
 
 void Script::enterState(ModState next, std::uint64_t nowMs, const char* reason)
@@ -348,7 +474,7 @@ void Script::enterState(ModState next, std::uint64_t nowMs, const char* reason)
     {
         // From COOLDOWN the COMBAT values are still in place (COOLDOWN never
         // writes), so writing them again would be a write without an effect -
-        // FR-46 / AT-39. 1.0 did exactly that, one more needless hitch per fight.
+        // FR-46 / AT-39.
         if (previous != ModState::Cooldown)
         {
             requestProfile(true);
@@ -378,6 +504,10 @@ void Script::handleRequests(std::uint64_t nowMs)
         publishHotkeys();
         m_detector.configure(m_config);
         Overlay::instance().configure(m_config);
+        if (m_patcher.ready())
+        {
+            m_patcher.logPlan(m_config);
+        }
         // The snapshot is NOT re-taken. Re-reading the config must never change
         // what "original" means (FR-57).
         requestProfile(m_state == ModState::Combat || m_state == ModState::Cooldown);
@@ -391,19 +521,23 @@ void Script::handleRequests(std::uint64_t nowMs)
         }
         else if (m_state == ModState::DisabledByUser)
         {
+            // Back on: always CALM (AsiPlugin business logic, status lifecycle).
+            // The detector's decision from before the pause is stale; if a fight is
+            // still on, the next poll moves to COMBAT at once.
             DRS_INFO("hotkey: mod switched back on");
-            m_state          = m_stateBeforeDisable;
+            m_state          = ModState::Calm;
             m_stateEnteredMs = nowMs;
-            requestProfile(m_state == ModState::Combat || m_state == ModState::Cooldown);
+            m_heldHash       = 0u;   // re-describe the weapon in hand
+            requestProfile(false);
         }
         else
         {
             DRS_INFO("hotkey: mod switched off, restoring boot values");
-            m_stateBeforeDisable = m_state;
             m_patcher.restoreAll();
             m_pendingWrite   = false;
             m_state          = ModState::DisabledByUser;
             m_stateEnteredMs = nowMs;
+            Overlay::instance().setDetail(nullptr);
         }
     }
 
@@ -427,6 +561,111 @@ int Script::cooldownTenthsLeft(std::uint64_t nowMs) const
     return static_cast<int>(remaining / 100u);
 }
 
+void Script::refreshHeldWeapon(int playerPedHandle)
+{
+    if (playerPedHandle == 0)
+    {
+        return;
+    }
+
+    const std::uint32_t held    = game::currentWeaponHash(playerPedHandle);
+    const bool          changed = (held != m_heldHash);
+    m_heldHash = held;
+
+    // Same weapon, same values: nothing to describe, format or log (NFR-01 - this
+    // runs at DetectorHz on the script thread).
+    if (!changed && !m_heldDetailDirty)
+    {
+        return;
+    }
+    m_heldDetailDirty = false;
+
+    const HeldWeaponStatus status = m_patcher.describe(held);
+
+    if (changed && !status.managed)
+    {
+        // Only for a weapon the plugin does not manage: is it a gun at all, and
+        // what does the game call it? Two natives, once per weapon change.
+        m_heldIsGun    = (held != 0u) && (held != kUnarmed) && game::isWeaponAGun(held);
+        m_heldLabel[0] = '\0';
+        if (m_heldIsGun)
+        {
+            game::weaponLabel(held, m_heldLabel, sizeof(m_heldLabel));
+        }
+    }
+    else if (changed)
+    {
+        m_heldIsGun    = true;
+        m_heldLabel[0] = '\0';
+    }
+
+    char detail[128] = {};
+    if (status.managed)
+    {
+        const char* shown = status.name.c_str();
+        if (startsWith(shown, "WEAPON_"))
+        {
+            shown += 7;
+        }
+        _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s  |  reload rate %.2f%s",
+                    shown, static_cast<double>(status.value),
+                    status.instances > 1 ? "  (+copies)" : "");
+    }
+    else if (m_heldIsGun)
+    {
+        if (status.known)
+        {
+            _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s  |  not managed",
+                        status.name.c_str());
+        }
+        else if (m_heldLabel[0] != '\0')
+        {
+            _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s  |  not managed", m_heldLabel);
+        }
+        else
+        {
+            _snprintf_s(detail, sizeof(detail), _TRUNCATE, "0x%08X  |  not managed", held);
+        }
+    }
+    Overlay::instance().setDetail(detail);
+
+    // One info line the first time each gun is taken in hand this session: the
+    // quickest way for a player to report "this one does not switch".
+    if (!changed || held == 0u || !(status.managed || m_heldIsGun))
+    {
+        return;
+    }
+    for (int i = 0; i < m_seenWeaponCount; ++i)
+    {
+        if (m_seenWeapons[i] == held)
+        {
+            DRS_DEBUG("weapon in hand: 0x%08X again", held);
+            return;
+        }
+    }
+    if (m_seenWeaponCount < kSeenCapacity)
+    {
+        m_seenWeapons[m_seenWeaponCount] = held;
+        ++m_seenWeaponCount;
+    }
+
+    if (status.managed)
+    {
+        DRS_INFO("weapon in hand: %s - managed (%d structure(s)), reload rate now %.4f",
+                 status.name.c_str(), status.instances, static_cast<double>(status.value));
+    }
+    else if (status.known)
+    {
+        DRS_INFO("weapon in hand: %s - known name, but no weapon structure was bound for it "
+                 "(see the resolver lines)", status.name.c_str());
+    }
+    else
+    {
+        DRS_INFO("weapon in hand: hash 0x%08X, label %s - a gun this plugin does NOT manage",
+                 held, m_heldLabel[0] != '\0' ? m_heldLabel : "none");
+    }
+}
+
 void Script::tick(std::uint64_t nowMs)
 {
     handleRequests(nowMs);
@@ -434,10 +673,10 @@ void Script::tick(std::uint64_t nowMs)
     // Draw the on-screen overlay every tick. UIDEBUG text is immediate-mode: if
     // it is issued only at the detector poll rate (DetectorHz = 4) it shows for
     // one frame and vanishes for the next ~15, which is the flicker reported in
-    // game on 1.0. Re-issuing it every tick costs one native call (the text is
+    // game on 1.0. Re-issuing it every tick costs a few native calls (the text is
     // cached, see Overlay.h) and is a no-op when OnScreenState = 0. It is drawn in
     // every state, including the two disabled ones, so the overlay honestly shows
-    // when the mod is off. hostileCount is the last polled value (D-1).
+    // when the mod is off. hostileCount is the last polled value.
     Overlay::instance().update(modStateName(m_state), m_lastHostileCount,
                                cooldownTenthsLeft(nowMs), kPluginVersion);
 
@@ -458,6 +697,12 @@ void Script::tick(std::uint64_t nowMs)
         return;
     }
 
+    const int ped      = game::playerPed();
+    const int playerId = game::playerId();
+
+    // Every frame (1.2): a shot is visible to the game for only a few frames.
+    m_detector.sampleTick(ped, playerId, nowMs);
+
     const int detectorHz = std::max(1, m_config.general().detectorHz);
     const std::uint64_t intervalMs = static_cast<std::uint64_t>(1000 / detectorHz);
 
@@ -465,21 +710,29 @@ void Script::tick(std::uint64_t nowMs)
     {
         m_lastDetectorMs = nowMs;
 
-        const int ped      = game::playerPed();
-        const int playerId = game::playerId();
-        const SignalSnapshot signals = m_detector.poll(ped, playerId, nowMs);
+        const bool inFight = (m_state == ModState::Combat || m_state == ModState::Cooldown);
+        const SignalSnapshot signals = m_detector.poll(ped, playerId, nowMs, inFight);
         const bool combatNow = m_forcedCombat || signals.anyCombat();
 
         // Cache for the overlay, which draws every tick (see above).
         m_lastHostileCount = signals.hostileCount;
 
+        // The reason text is built only for a transition that is actually logged,
+        // not on every poll (NFR-01).
+        // A forced fight with no real signal is named as such; 1.1 logged it as "(none)".
         char reason[128] = {};
-        m_detector.describe(reason, sizeof(reason));
+        auto why = [&]() -> const char* {
+            if (m_forcedCombat && !signals.anyCombat())
+            {
+                return "forced by hotkey";
+            }
+            return m_detector.describe(reason, sizeof(reason));
+        };
 
         switch (m_state)
         {
         case ModState::Calm:
-            if (combatNow) { enterState(ModState::Combat, nowMs, reason); }
+            if (combatNow) { enterState(ModState::Combat, nowMs, why()); }
             break;
 
         case ModState::Combat:
@@ -489,7 +742,7 @@ void Script::tick(std::uint64_t nowMs)
         case ModState::Cooldown:
             if (combatNow)
             {
-                enterState(ModState::Combat, nowMs, reason);
+                enterState(ModState::Combat, nowMs, why());
             }
             else
             {
@@ -505,6 +758,8 @@ void Script::tick(std::uint64_t nowMs)
         default:
             break;
         }
+
+        refreshHeldWeapon(ped);
     }
 
     flushPendingWrite();

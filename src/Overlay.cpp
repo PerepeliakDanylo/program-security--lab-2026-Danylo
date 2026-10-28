@@ -3,8 +3,17 @@
 #include "Logger.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace drs {
+
+namespace {
+
+constexpr float kLeft        = 0.02f;
+constexpr float kFirstLine   = 0.02f;
+constexpr float kSecondLine  = 0.05f;
+
+} // namespace
 
 Overlay& Overlay::instance()
 {
@@ -29,6 +38,19 @@ void Overlay::configure(const Config& config)
         DRS_INFO("overlay: OnScreenState = 1 but on-screen text is not available in "
                  "this build of the plugin, so nothing will be drawn. The state is "
                  "still written to the log on every transition.");
+    }
+}
+
+void Overlay::setDetail(const char* text)
+{
+    if (text == nullptr || text[0] == '\0')
+    {
+        m_detail[0] = '\0';
+        return;
+    }
+    if (std::strcmp(text, m_detail) != 0)
+    {
+        strncpy_s(m_detail, sizeof(m_detail), text, _TRUNCATE);
     }
 }
 
@@ -65,7 +87,11 @@ void Overlay::update(const char* stateName, int hostileCount, int cooldownTenths
     }
 
     // Re-issued every frame: immediate-mode text lives for one frame only.
-    game::drawDebugText(m_text, 0.02f, 0.02f);
+    game::drawDebugText(m_text, kLeft, kFirstLine);
+    if (m_detail[0] != '\0')
+    {
+        game::drawDebugText(m_detail, kLeft, kSecondLine);
+    }
 }
 
 } // namespace drs

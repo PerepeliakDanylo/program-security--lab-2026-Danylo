@@ -26,8 +26,8 @@ struct VanillaRow
 // In stock data this field takes exactly two values, 1.00 and 1.30, and that
 // split is the signature the resolver matches against (DESIGN.md 3.4).
 // Compiled in so the mod still resolves when the INI is missing or rejected.
-// The five weapons that have no CWeaponInfo entry at all are deliberately absent:
-// their stock value is unknown and guessing it would poison the signature.
+// The weapons that have no CWeaponInfo entry in weapons.ymt are deliberately
+// absent: their stock value is unknown and guessing it would poison the signature.
 const VanillaRow kBuiltInVanilla[] = {
     { "WEAPON_RIFLE_VARMINT",            1.30f },
     { "WEAPON_REPEATER_CARBINE",         1.30f },
@@ -341,6 +341,8 @@ void Config::applySectionKey(const std::string& section, const std::string& key,
         if (boolKey("HostileNearby", m_signals.hostileNearby)) { return; }
         if (boolKey("WantedByLaw", m_signals.wantedByLaw)) { return; }
         if (boolKey("DeadEye", m_signals.deadEye)) { return; }
+        if (boolKey("AttackingHumans", m_signals.attackingHumans)) { return; }
+        if (boolKey("ShootingSustainsCombat", m_signals.shootingSustainsCombat)) { return; }
         warn("unknown key [Signals] %s", key.c_str());
         return;
     }
@@ -427,6 +429,8 @@ void Config::applySectionKey(const std::string& section, const std::string& key,
             return;
         }
         if (boolKey("PatchAllConditions", m_memory.patchAllConditions)) { return; }
+        if (boolKey("IncludeUnlistedGuns", m_memory.includeUnlistedGuns)) { return; }
+        if (boolKey("PatchSectionedReload", m_memory.patchSectionedReload)) { return; }
 
         auto forcedOffset = [&](const char* name, std::int32_t& target) -> bool {
             if (!iequals(key, name)) { return false; }
@@ -598,10 +602,10 @@ void Config::validateAfterLoad()
 {
     if (m_defaults.minValue >= m_defaults.maxValue)
     {
-        warn("MinValue %.4f >= MaxValue %.4f, restoring built-in 0.05 / 8.0",
+        warn("MinValue %.4f >= MaxValue %.4f, restoring built-in 0.05 / 12.0",
              m_defaults.minValue, m_defaults.maxValue);
         m_defaults.minValue = 0.05f;
-        m_defaults.maxValue = 8.0f;
+        m_defaults.maxValue = 12.0f;
     }
 
     // The three CALM multipliers are not independent; see DESIGN.md section 1.
@@ -639,6 +643,16 @@ void Config::validateAfterLoad()
         warn("only %d weapons carry a stock reference value but MinConsensusWeapons is %d; "
              "offset discovery will have to fall back to structural matching",
              withVanilla, m_memory.minConsensusWeapons);
+    }
+
+    // Signals that make the mod do nothing at all, said once so a player who
+    // switched everything off by accident can see it in the log.
+    const SignalSettings& s = m_signals;
+    if (!s.playerShooting && !s.melee && !s.recentDamage && !s.hostileNearby &&
+        !s.wantedByLaw && !s.deadEye && !s.attackingHumans)
+    {
+        warn("every combat signal in [Signals] is off: the mod will stay in CALM "
+             "unless COMBAT is forced with the hotkey");
     }
 }
 

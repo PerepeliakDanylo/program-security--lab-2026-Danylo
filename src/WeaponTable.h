@@ -1,7 +1,8 @@
 // WeaponTable.h — compiled-in reference data, read out of an unmodified
 // weapons.ymt on 2026-09-26 and cross-checked line by line against the file,
-// then expanded 2026-10-19 with the gun variants present in the merged overhaul
-// file (game_data/weapons_merged_part2.txt) and vanilla_weapon_anim_rate.csv.
+// expanded 2026-10-19 with the gun variants present in the merged overhaul file
+// (game_data/weapons_merged_part2.txt) and vanilla_weapon_anim_rate.csv, and on
+// 2026-10-24 with two weapons that live only in DLC data.
 //
 // Why this is compiled in and not only in the INI: these numbers are what lets
 // the resolver recognise the right field in memory (DESIGN.md 3.4). If the
@@ -10,30 +11,36 @@
 // nothing" instead of "mod falls back to defaults".
 //
 // These are NOT tuning values. They are stock Rockstar values used as a
-// signature. Never write them to memory as if they were a profile.
+// signature. Never write them to memory as if they were a profile — with one
+// exception: in auto mode a weapon whose loaded value is the player's CALM
+// value and that has no Combat_AnimReloadRate in the INI goes back to this
+// stock value in COMBAT (it IS the stock value).
 //
-// COVERAGE (2026-10-19, D-5): base weapons AND their named/variant forms each
-// have their own CWeaponInfo in memory, with their own AnimReloadRate. The
-// resolver scans for every hash listed here, so a variant (e.g. the Mexican
-// Cattleman, John's Cattleman, a dual-wield) is switched between CALM and COMBAT
-// too, not left on whatever weapons.ymt loaded. Per-weapon TUNING still comes
-// from the INI by longest-prefix match (Config::matchWeapon), so no new INI
-// section is needed for a variant — it uses its base weapon's section.
+// COVERAGE. Base weapons AND their named/variant forms each have their own
+// CWeaponInfo in memory, with their own AnimReloadRate. Per-weapon TUNING comes
+// from the INI by longest-prefix match (Config::matchWeapon), so a variant uses
+// its base weapon's section. Since 1.2 the resolver also recognises CWeaponInfo
+// objects by their class (DESIGN.md 3.7), so guns that are NOT in this table are
+// still found and switched (IncludeUnlistedGuns); this table is what lets the
+// resolver learn that class in the first place.
 //
 // Variants share their base weapon's sectioned-reload profile (profileName /
 // profileHash), so they add NO new entries to kConditionReference below.
 //
-// The five weapons with no CWeaponInfo entry in a FILE at all — LeMat, Navy,
-// M1899, Evans, Elephant — keep vanillaAnimReloadRate = 0 (unknown) and take no
-// part in offset discovery. The first in-game run (2026-10-19) confirmed Navy,
-// M1899 and Evans DO exist in memory and are patchable; LeMat/Elephant still to
-// be confirmed by a resolver log line when held.
+// The weapons with no CWeaponInfo in weapons.ymt — LeMat, Navy, M1899, Evans,
+// Elephant, the High Roller and the Navy crossover — keep vanillaAnimReloadRate
+// = 0 (unknown) and take no part in offset discovery. They are bound by class
+// (1.2); 1.1 bound them "by plausibility", i.e. to the first structure with a
+// sane-looking float, which the 2026-10-22 logs showed to be the wrong structure
+// on some launches (Navy 3.0094, a Double-Action at 0.30 instead of 0.38).
 //
 // No dependency on the ScriptHookRDR2 SDK.
 
 #pragma once
 
 #include <cstdint>
+
+#include "Joaat.h"
 
 namespace drs {
 
@@ -118,21 +125,54 @@ inline constexpr WeaponReference kWeaponReference[] = {
     { "WEAPON_SHOTGUN_SAWEDOFF_CHARLES",        "shotgun_sawedoff",      0u,          1.00f, 3.00f,  0.125f },
 
     // ---- no CWeaponInfo in any weapons.ymt: vanilla value unknown (0) --------
-    // Patchable only by this plugin via memory. Confirmed in memory 2026-10-19:
-    // Navy, M1899, Evans. LeMat, Elephant still to confirm when held.
+    // Patchable only by this plugin via memory. All five base names were found
+    // in memory on 2026-10-19/22. The last two names are the DLC High Roller
+    // (bought from the fence in story mode since the PC release) and the Navy
+    // crossover; if a name is wrong the log says "not found" and nothing else
+    // happens, and the class scan picks the weapon up anyway.
     { "WEAPON_REVOLVER_LEMAT",                  nullptr,                 0u,          0.0f,  0.0f,   0.0f },
     { "WEAPON_REVOLVER_NAVY",                   nullptr,                 0u,          0.0f,  0.0f,   0.0f },
     { "WEAPON_PISTOL_M1899",                    nullptr,                 0u,          0.0f,  0.0f,   0.0f },
     { "WEAPON_REPEATER_EVANS",                  nullptr,                 0u,          0.0f,  0.0f,   0.0f },
     { "WEAPON_RIFLE_ELEPHANT",                  nullptr,                 0u,          0.0f,  0.0f,   0.0f },
+    { "WEAPON_REVOLVER_DOUBLEACTION_GAMBLER",    nullptr,                 0u,          0.0f,  0.0f,   0.0f },
+    { "WEAPON_REVOLVER_NAVY_CROSSOVER",         nullptr,                 0u,          0.0f,  0.0f,   0.0f },
 };
+
+// Guns the class scan may find that this plugin must never switch: mounted and
+// emplaced weapons (their "reload" is a crew/cool-down animation, not the
+// player's hands) and bows (nocking an arrow is not a reload; measured and left
+// alone on purpose, see tools/rdr2_reload_measurements_v5.csv).
+inline constexpr std::uint32_t kNeverManaged[] = {
+    joaat("weapon_turret_gatling"),
+    joaat("weapon_turret_revolving_cannon"),
+    joaat("weapon_turret_maxim"),
+    joaat("weapon_turret_cannon"),
+    joaat("weapon_bow"),
+    joaat("weapon_bow_charles"),
+    joaat("weapon_bow_improved"),
+};
+
+inline bool isNeverManaged(std::uint32_t hash)
+{
+    for (std::uint32_t excluded : kNeverManaged)
+    {
+        if (excluded == hash)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Stock per-condition LoopRate and TimeBetweenBulletsInLoop, in the order
 // GoodCondition, WornCondition, GoodConditionOH, WornConditionOH.
 //
-// Unchanged from Chat 7: variants share these profiles, so no new rows. Note the
-// counter-intuitive part: WornCondition often has a HIGHER LoopRate than
-// GoodCondition (varmint 3.0 vs 2.2). The wear penalty lives in
+// Used only with PatchSectionedReload = 1 (off by default since 1.2: the 1.1
+// logs proved the developer's CALM values were calibrated with these fields at
+// stock in memory, so writing them would make CALM slower than measured).
+// Note the counter-intuitive part: WornCondition often has a HIGHER LoopRate
+// than GoodCondition (varmint 3.0 vs 2.2). The wear penalty lives in
 // TimeBetweenBulletsInLoop (0.225 vs 0.125), not in LoopRate.
 struct ConditionReference
 {
