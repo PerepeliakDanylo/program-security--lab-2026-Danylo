@@ -3,9 +3,9 @@
 | | |
 | --- | --- |
 | Назва | Реєстр нативних функцій гри, які викликає плагін |
-| Версія | 0.2.0 |
-| Статус | **Таблиця §3 звірена повністю** 2026-09-28. Лишилося підтвердити прогоном у грі, а не за документами |
-| Останнє оновлення | 2026-09-28 |
+| Версія | 0.4.0 |
+| Статус | **Таблиця §3 звірена повністю** 2026-09-28; оверлей підтверджено в грі 2026-10-19/22; додано §3.5 (1.1.0), §3.6 (1.2.0, звірено 2026-10-24, у грі 2026-10-27) і §3.7 (1.2.1, звірено 2026-10-27 за згенерованим `natives.h` і `natives.json`) |
+| Останнє оновлення | 2026-10-27 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | `DESIGN.md` (§6, §9), `UNVERIFIED.md`, `TESTPLAN.md`, `BUILD.md` (§2), `../../docs/security/security_requirements.md` (SR-19), `../../docs/architecture/architecture.md` (AD-01, AD-05) |
 
@@ -146,16 +146,17 @@
 
 | натив | простір імен | хеш | сигнатура | статус |
 |---|---|---|---|---|
-| `_BG_DISPLAY_TEXT` | `UIDEBUG` | `0x16794E044C9EFB58` | `void (const char* text, float x, float y)` | існує; послідовність виклику не підтверджена |
-| `_BG_SET_TEXT_SCALE` | `UIDEBUG` | `0xA1253A3C870B6843` | `void (float scaleX, float scaleY)` | те саме |
-| `_BG_SET_TEXT_COLOR` | `UIDEBUG` | `0x16FA5CE47F184F1E` | `void (int red, int green, int blue, int alpha)` | те саме |
-| `VAR_STRING` | `MISC` | `0xFA925AC00EB830B9` | `const char* (int flags, …)` — варіативний | існує |
+| `_BG_DISPLAY_TEXT` | `UIDEBUG` | `0x16794E044C9EFB58` | `void (const char* text, float x, float y)` | підтверджено в грі 2026-10-19 (малювати щокадру) |
+| `_BG_SET_TEXT_SCALE` | `UIDEBUG` | `0xA1253A3C870B6843` | `void (float scaleX, float scaleY)` | підтверджено в грі 2026-10-19 |
+| `_BG_SET_TEXT_COLOR` | `UIDEBUG` | `0x16FA5CE47F184F1E` | `void (int red, int green, int blue, int alpha)` | підтверджено в грі 2026-10-19 |
+| `VAR_STRING` | `MISC` | `0xFA925AC00EB830B9` | `const char* (int flags, …)` — варіативний | підтверджено: `VAR_STRING(10, "LITERAL_STRING", text)` |
 
-У RDR2 **немає** ланцюжка текстових команд GTA V. Рядок для `_BG_DISPLAY_TEXT` треба будувати через
-`VAR_STRING` — це вимога, записана коментарем на самому нативі в базі. Що саме лишається
-непідтвердженим: порядок трьох викликів і значення `flags` у `VAR_STRING`. Тому `OnScreenState = 0`
-у постачальному INI, а питання відкрите як U-04 в `UNVERIFIED.md`. Найгірший наслідок помилки тут —
-оверлей нічого не малює; пам'ять не зачіпається.
+У RDR2 **немає** ланцюжка текстових команд GTA V. Рядок для `_BG_DISPLAY_TEXT` будується через
+`VAR_STRING` — це вимога, записана коментарем на самому нативі в базі. Порядок
+`_BG_SET_TEXT_SCALE` → `_BG_SET_TEXT_COLOR` → `_BG_DISPLAY_TEXT` і `flags = 10` підтверджено в грі
+(U-04 закрито): текст `UIDEBUG` живе **рівно один кадр**, тому його треба видавати на кожному тіку —
+на частоті детектора (1.0) він мигав. `OnScreenState = 0` у постачальному INI лишається, бо це
+налагоджувальний засіб.
 
 ### 3.4 Прив'язка до сигналів і до конфігу
 
@@ -165,10 +166,73 @@
 | Прицілювання | `PLAYER::IS_PLAYER_FREE_AIMING`, `PLAYER::IS_PLAYER_TARGETTING_ANYTHING` | `PlayerAiming` | сам по собі бою не означає: зараховується лише разом із «ворог поруч» або «недавно отримав шкоду» (AD-07, FR-40) |
 | Ближній бій | `PED::IS_PED_IN_MELEE_COMBAT` | `Melee` | база попереджає: істина ще кілька секунд після удару й у бойовій стійці |
 | Недавня шкода | `ENTITY::HAS_ENTITY_BEEN_DAMAGED_BY_ANY_PED` | `RecentDamage` | прапорець гри скидається після читання, щоб не рахувати ту саму подію двічі; пам'ять — `DamageMemorySeconds` |
-| Ворог поруч | `PED::IS_PED_IN_COMBAT` | `HostileNearby` | напрямок виклику саме `IS_PED_IN_COMBAT(otherPed, playerPed)` — «чи воює *інший* проти гравця»; радіус `ThreatRadius`, не більше `MaxPedsScanned` кандидатів |
+| Ворог поруч | `PED::IS_PED_IN_COMBAT` | `HostileNearby` | напрямок виклику саме `IS_PED_IN_COMBAT(otherPed, playerPed)` — «чи воює *інший* проти гравця»; радіус `ThreatRadius`; **1.2:** список педів читається повністю, питання отримують найближчі `MaxPedsScanned` |
 | Розшук законом | `LAW::IS_LAW_INCIDENT_ACTIVE` | `WantedByLaw` | ключ увімкнений за замовчуванням; сигнал став робочим 2026-09-28 |
-| Dead Eye | `PLAYER::_IS_SPECIAL_ABILITY_ACTIVE` | `DeadEye` | натив підтверджено, але значення за замовчуванням лишається `0` до прогону AT-2x |
+| Dead Eye | `PLAYER::_IS_SPECIAL_ABILITY_ACTIVE` | `DeadEye` | натив підтверджено, але значення за замовчуванням лишається `0` до прогону AT-44b |
+| Постріл у людину (1.2) | §3.6 | `AttackingHumans` | лише в кадрах, де `IS_PED_SHOOTING` істинне |
+| Постріли тримають бій (1.2) | `PED::IS_PED_SHOOTING` | `ShootingSustainsCombat` | лише в `COMBAT`/`COOLDOWN`; **1.2.1:** постріл зараховується на 2 с (і для `PlayerShooting`) |
 | Перезарядка триває | `PED::IS_PED_RELOADING` | — | **не сигнал бою**, а блокування запису (FR-45, AD-10) |
+
+### 3.5 Момент старту (1.1.0)
+
+| натив | простір імен | хеш | сигнатура | статус |
+|---|---|---|---|---|
+| `IS_SCREEN_FADED_IN` | `CAMERA` | `0x37F9A426FBCF4AF2` | `BOOL ()` | підтверджено в грі 2026-10-20: `world on screen after 1141 ms` |
+| `GET_IS_LOADING_SCREEN_ACTIVE` | `DLC` | `0x71D4BF5890659B0C` | `BOOL ()` | те саме |
+
+Лише для того, щоб почати одноразове сканування пам'яті після екрана завантаження
+(`Script::waitForGameplay`). Простір імен саме `CAMERA`, не `CAM`. Хибна відповідь лише затримує
+старт (не довше 120 с); від них не залежить жоден запис.
+
+### 3.6 Постріл у людину, зброя поза таблицею (1.2.0)
+
+Звірено 2026-10-24 за згенерованим `natives.h` (той самий, з яким іде збірка): ім'я, простір імен,
+хеш і сигнатура.
+
+| натив | простір імен | хеш | сигнатура | для чого |
+|---|---|---|---|---|
+| `GET_ENTITY_PLAYER_IS_FREE_AIMING_AT` | `PLAYER` | `0xA6817C110B830EAD` | `BOOL (Player player, Entity& entity)` | ціль під прицілом у кадрі пострілу |
+| `GET_PLAYER_TARGET_ENTITY` | `PLAYER` | `0xAE663DDD99C8A670` | `BOOL (Player player, Entity& entity)` | захоплена ціль (м'яке наведення) |
+| `IS_ENTITY_A_PED` | `ENTITY` | `0xCF8176912DDA4EA5` | `BOOL (Entity entity)` | ціль — пед |
+| `IS_PED_HUMAN` | `PED` | `0xB980061DA992779D` | `BOOL (Ped ped)` | людина, не тварина |
+| `GET_PED_SOURCE_OF_DEATH` | `PED` | `0x93C8B64DEB84728C` | `Entity (Ped ped)` | ціль, убита цим самим пострілом (U-08) |
+| `IS_WEAPON_A_GUN` | `WEAPON` | `0x705BE297EEBDB95D` | `BOOL (Hash weaponHash)` | «прапорець `Gun`»: відсіяти холодну, метальну, тваринну «зброю» (U-09) |
+| `_GET_WEAPON_NAME` | `WEAPON` | `0x89CF5FF3D363311E` | `const char* (Hash weaponHash)` | мітка гри (`WNS_…`), копіюється одразу під SEH (U-06) |
+
+Два уточнення:
+
+- Обидва `GET_…_ENTITY` у згенерованому заголовку приймають вихідний параметр **за посиланням**
+  (`Entity&`) і самі беруть адресу — викликати з `aimed`, не з `&aimed`.
+- `_GET_WEAPON_NAME` повертає вказівник у дані гри. Плагін не зберігає його ні на мить: рядок
+  копіюється в свій буфер через захищене читання (`MemScan::readCString`), тож навіть хибний
+  вказівник дає лише «мітки немає».
+
+У грі 2026-10-27 (1.2.0): постріл у людину — `CALM -> COMBAT (attacking)` п'ять разів; мітка
+`_GET_WEAPON_NAME` для двох псевдостволів — саме внутрішнє ім'я (U-06); `IS_WEAPON_A_GUN` істинна й
+для `WEAPON_RAMMED_BY_CAR` / `WEAPON_RUN_OVER_BY_CAR` (U-09 → §3.7).
+
+### 3.7 Друга рука й клас зброї (1.2.1)
+
+Звірено 2026-10-27 за згенерованим `natives.h` (простір імен `WEAPON`) і `natives.json`: ім'я,
+хеш, сигнатура.
+
+| натив | простір імен | хеш | сигнатура | для чого |
+|---|---|---|---|---|
+| `GET_CURRENT_PED_WEAPON` | `WEAPON` | `0x3A87E44BB9A01D54` | `BOOL (Ped ped, Hash& weaponHash, BOOL p2, int attachPoint, BOOL p4)` | той самий, що в §3.2, але з `attachPoint = 1` — друга рука |
+| `GET_CURRENT_PED_WEAPON_ENTITY_INDEX` | `WEAPON` | `0x3B390A939AF0B5FC` | `Entity (Ped ped, int attachPoint)` | чи справді в другій руці є об'єкт зброї |
+| `IS_WEAPON_REVOLVER` | `WEAPON` | `0xC212F1D05A8232BB` | `BOOL (Hash weaponHash)` | пара для двох рук; клас вогнепальної |
+| `IS_WEAPON_PISTOL` | `WEAPON` | `0xDDC64F5E31EEDAB6` | `BOOL (Hash weaponHash)` | те саме |
+| `IS_WEAPON_REPEATER` | `WEAPON` | `0xDDB2578E95EF7138` | `BOOL (Hash weaponHash)` | клас вогнепальної (зброя поза таблицею) |
+| `IS_WEAPON_RIFLE` | `WEAPON` | `0x0A82317B7EBFC420` | `BOOL (Hash weaponHash)` | те саме |
+| `IS_WEAPON_SHOTGUN` | `WEAPON` | `0xC75386174ECE95D5` | `BOOL (Hash weaponHash)` | те саме |
+| `_IS_WEAPON_SNIPER` | `WEAPON` | `0x6AD66548840472E5` | `BOOL (Hash weaponHash)` | те саме; **з провідним підкресленням**, на відміну від чотирьох попередніх |
+
+Точки кріплення — перелік `eWeaponAttachPoint` із коментаря бази до `SET_CURRENT_PED_WEAPON`
+(на нього посилається `GET_CURRENT_PED_WEAPON`): `WEAPON_ATTACH_POINT_HAND_PRIMARY = 0`,
+`WEAPON_ATTACH_POINT_HAND_SECONDARY = 1`, `MAX_HAND_WEAPON_ATTACH_POINTS = 2`. Що друга рука — це ліва
+рука при стрільбі з двох рук, і що для порожньої руки гра не віддає хибного хеша, — U-10; тому плагін
+додатково вимагає об'єкт зброї в цій руці. Для другої руки, на відміну від першої, результат
+`GET_CURRENT_PED_WEAPON` враховується: `FALSE` — «нічого немає».
 
 ## 4. Функції SDK, що не є нативами
 

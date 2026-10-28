@@ -3,9 +3,9 @@
 | | |
 | --- | --- |
 | Назва | Інструкція зі збірки плагіна |
-| Версія | 0.3.0 |
-| Статус | Чинна — блокер заголовків SDK знято 2026-09-28; дефект `NOMINMAX` у CMake усунено 2026-09-29 |
-| Останнє оновлення | 2026-09-29 |
+| Версія | 0.5.0 |
+| Статус | Чинна — блокер заголовків SDK знято 2026-09-28; дефект `NOMINMAX` у CMake усунено 2026-09-29; 1.2.0 зібрано без жодної помилки й попередження в `src\` (2026-10-27, MSVC 2022, `/W4`); §6 — під лог 1.2.1 |
+| Останнє оновлення | 2026-10-27 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | [`DESIGN.md`](DESIGN.md), [`NATIVES.md`](NATIVES.md), [`UNVERIFIED.md`](UNVERIFIED.md), [`TESTPLAN.md`](TESTPLAN.md) |
 
@@ -241,22 +241,40 @@ cmake -B build -G "Visual Studio 17 2022" -A x64 -DDRS_SCRIPTHOOK_LIB="C:\пов
 1. Скопіювати `DynamicReloadSpeed.asi` і `DynamicReloadSpeed.ini` у корінь гри, поруч із
    `RDR2.exe` і `dinput8.dll` від ASI-лоадера.
 2. Запустити гру, дочекатися завантаження збереження, вийти.
-3. Відкрити `DynamicReloadSpeed.log` у корені гри. Мають бути, у цьому порядку:
+3. Відкрити `DynamicReloadSpeed.log` у корені гри. Мають бути, у цьому порядку (1.2.1; `…` —
+   числа, що залежать від машини; між рядками можуть бути інші; номер `class candidate`, що
+   пройшов перевірку, буває різним — у прогоні 1.2.0 це були 6 і 7):
 
 ```
-RDR2 Dynamic Reload 1.0.0 starting
-config: loaded from file, N warning(s), M weapon sections
-game api: online check available, ...
+RDR2 Dynamic Reload 1.2.1 starting
+config: loaded from file, 0 warning(s), M weapon sections
 game build: 1.0.1491.50
 version check: no build list configured in [Versions], proceeding
-waiting 8000 ms for the game to finish loading weapon data
-memscan: regions=... scannable=... MB
-resolver: 24 weapon names, 19 sectioned profiles to look for
-resolver: AnimReloadRate signature=stock best offset=0x.... score=... -> accepted
-snapshot: WEAPON_... AnimReloadRate = 1.3000  in-module: no
-resolver: ready, N weapons and M sectioned profiles patchable
-CALM applied: N fields written, 0 skipped
+start-up: world on screen after … ms, settling 5000 ms before the scan
+resolver: scanning on a background thread, the game keeps running
+resolver: 59 weapon names, … sectioned profiles to look for (PatchSectionedReload = 0: AnimReloadRate only)
+resolver: N of 59 weapon names present in memory, … MB scanned (…)
+resolver: class candidate K: qword at name-0x… = RDR2.exe+0x…, on … names (…)
+resolver: class candidate K: AnimReloadRate stock ok=… sig=… off=0x… | calm ok=1 sig=… off=0x0180
+resolver: weapon-info class recognised: qword at name-0x… = RDR2.exe+0x… on … names; AnimReloadRate at name+0x0180, … exact calm values (…)
+resolver: class scan: … weapon-info objects, … with table names (… added that the name scan missed), …
+resolver: AnimReloadRate bindings: … value+class, … class only, 0 value only; 0 name(s) present but unbound
+snapshot: WEAPON_… AnimReloadRate = …  in-module: no
+resolver: ready in … ms: … weapon structures for … names, … unlisted candidates, 0 sectioned profiles patchable
+resolver: background scan finished in … ms
+unlisted: … other weapon-info names, … of them hand-held guns (… structure(s) adopted), … not hand-held guns, … excluded (mounted guns, bows)
+plan: WEAPON_… loaded … (stock | slowed or unknown) -> CALM … [...] / COMBAT … [...]
+plan: … weapon name(s), mode auto
+start-up: … weapon structures for … names will be switched
+CALM applied: … written, 0 already in place, 0 skipped, … ms
 ```
+
+На сповільненому `weapons.ymt` клас підтверджує calm-пас (`calm ok=1`); на стоковому —
+stock-пас (`stock ok=1`, а `… exact stock values`) — обидва випадки бачили в прогоні 1.2.0
+(2026-10-27). Час у рядку `CALM/COMBAT applied` — частки мілісекунди (у прогоні 1.2.0 —
+0.02-0.09 мс); одиниці й більше — дефект (так виглядало підвисання 1.1.0, `TESTPLAN.md` AT-68).
+У грі без додаткової зброї `unlisted:` дає `0 of them hand-held guns` — це норма (1.2.0 тут
+приймала дві псевдозброї від транспорту, 1.2.1 — ні).
 
 Рядок `game build:` — перша річ, яку треба перевірити: там має бути **1.0.1491.50**. Якщо там
 `unknown`, читання ресурсу версії не спрацювало, і це окремий дефект, який треба усунути до
