@@ -1,5 +1,5 @@
 ================================================================================
- RDR2 DYNAMIC RELOAD  1.0
+ RDR2 DYNAMIC RELOAD  1.2
  DynamicReloadSpeed.asi
 ================================================================================
 
@@ -11,18 +11,24 @@ WHAT IT DOES
   is over and nothing hostile has happened for a few seconds, the slow reload
   comes back.
 
-  It changes exactly three numbers that control reload timing:
-  AnimReloadRate, LoopRate and TimeBetweenBulletsInLoop. Nothing else.
-  Damage, recoil, spread, ammo capacity, prices and every other weapon
-  parameter are untouched.
+  It changes reload timing and nothing else: the weapon's AnimReloadRate, and -
+  only if you switch it on (PatchSectionedReload = 1) - LoopRate and
+  TimeBetweenBulletsInLoop. Damage, recoil, spread, ammo capacity, prices and
+  every other weapon parameter are untouched.
 
   How it works, in one paragraph: the game reads its weapon data file once,
   while loading, so editing a file cannot change anything afterwards. This mod
   therefore finds the weapon data that is already loaded in the game's memory,
-  takes a snapshot of the three original values, and writes the profile that
-  matches your current situation. The snapshot is restored when you switch the
-  mod off, when the game shuts down, and on every error path. It never writes
-  during a reload animation that is already playing.
+  takes a snapshot of the original values, and writes the profile that matches
+  your current situation. The snapshot is restored when you switch the mod off,
+  when the game shuts down, and on every error path. It never writes during a
+  reload animation that is already playing, and a switch between the two speeds
+  costs no noticeable frame time (since 1.2).
+
+  Every gun is covered: the base weapons, their named and dual-wield variants,
+  the weapons that have no entry in weapons.ymt at all (LeMat, Navy, M1899,
+  Evans, Elephant Rifle, High Roller) and, since 1.2, guns the mod has no list
+  entry for - it recognises weapon data by its structure, not only by name.
 
 
 READ THIS FIRST - THREE THINGS YOU HAVE TO KNOW
@@ -54,6 +60,11 @@ REQUIREMENTS
   font or localisation mod, and you do NOT need the Visual C++ redistributable
   (the plugin is built with a static runtime).
 
+  Load the plugin ONE way only: either through the ASI loader (dinput8.dll) or
+  through another tool's DLL list - not both. Loading the same file twice does
+  no harm (Windows hands back the copy that is already loaded), but one way is
+  easier to reason about when something needs checking.
+
 
 INSTALL
 
@@ -73,6 +84,25 @@ INSTALL
   modified, renamed or replaced.
 
 
+WHAT COUNTS AS A FIGHT
+
+  COMBAT starts at once when any of these is true, and ends CooldownSeconds
+  after the last of them stopped:
+
+    - someone near you is fighting you (a gang, a wolf, a lawman)
+    - you were hit recently
+    - you are in a fist fight or shoved someone
+    - you fired at a PERSON you were aiming at or locked on to
+      (AttackingHumans; shooting a deer does not count)
+    - the law is actively after you
+    - with PlayerShooting = 1 (default): any shot at all
+
+  While a fight is on, every shot you fire keeps it on (ShootingSustainsCombat),
+  so a cooldown never kicks in between two shots. Hunters who want the slow
+  reload while shooting game set PlayerShooting = 0 - shots at people still
+  start a fight.
+
+
 HOW TO CONFIRM IT LOADED
 
   Look for DynamicReloadSpeed.log next to DynamicReloadSpeed.asi.
@@ -84,7 +114,14 @@ HOW TO CONFIRM IT LOADED
     - which optional game signals are available on this build
     - the game build it detected - this line starts with "game build:" and
       shows the same four numbers as RDR2.exe -> Properties -> Details
-    - how many weapons it resolved in memory (a number greater than zero)
+    - how it recognised the weapon data ("weapon-info class recognised")
+    - one "plan:" line per weapon: the value the game loaded and the CALM /
+      COMBAT values that weapon will get
+
+  With OnScreenState = 1 in [Debug] the state is also shown on screen: INIT and
+  SCANNING while the mod starts (a few seconds after loading), then CALM,
+  COMBAT or COOLDOWN with the time left, and on a second line the gun in your
+  hands with the reload rate the mod has put there - or "not managed".
 
   If there is no log file at all, the plugin was never loaded and the problem
   is the ASI loader or ScriptHookRDR2, not this mod.
@@ -125,7 +162,8 @@ HOTKEYS
        then leaves combat the normal way, after the cooldown.
   F9   Re-read DynamicReloadSpeed.ini without restarting the game. Useful while
        tuning. It does NOT touch the snapshot of your original values, so F7
-       still restores exactly what the game loaded at startup.
+       still restores exactly what the game loaded at startup. The "plan:"
+       lines are written again with the new values.
 
   The keys are configurable in the [Debug] section.
 
@@ -153,18 +191,25 @@ THE TWO SETTINGS MOST PEOPLE WILL WANT
      over it and rename it to DynamicReloadSpeed.ini. Press F9 in game, or
      restart.
 
-     Note: the presets deliberately contain no search-parameter section and no
-     game build list. If you had pinned a build number, copying a preset over
-     your INI clears it, and the plugin goes back to "no build list configured,
-     proceeding". Put the number back if you want that safety net.
+     Note: the presets deliberately contain no search-parameter section, no
+     game build list and no switch that turns the build check off. If you had
+     pinned a build number, copying a preset over your INI clears it, and the
+     plugin goes back to "no build list configured, proceeding". Put the number
+     back if you want that safety net.
+
+     If you use your own slowed weapons.ymt, the CALM speed of every weapon in
+     it is the one YOUR file loads; the mod then only switches those weapons to
+     stock speed in a fight. The presets matter for the weapons your file does
+     not slow.
 
 
 AFTER A GAME UPDATE
 
   This mod contains no hard-coded addresses and no byte patterns. It finds the
-  weapon data by the weapon's own name, and it measures where the reload
-  fields sit on YOUR machine, every time the game starts. That is why a game
-  update does not normally require a new version of the mod.
+  weapon data by the weapon's own name and by the shape of the game's weapon
+  structure, and it measures where the reload field sits on YOUR machine,
+  every time the game starts. That is why a game update does not normally
+  require a new version of the mod.
 
   It also means the mod can fail to find what it needs. If the measurement
   does not agree with itself, the mod does nothing at all, writes the reason
@@ -182,10 +227,12 @@ AFTER A GAME UPDATE
 THE [Memory] SECTION
 
   [Memory] holds the search parameters the mod uses to locate and measure the
-  reload fields. It is for maintenance only: edit it only when the mod's
-  maintainer tells you to after a game update. There is deliberately no
-  setting in it that can name an address, and the shipped presets contain no
-  [Memory] section at all.
+  reload fields, plus two switches: IncludeUnlistedGuns (also switch guns that
+  have no section in the INI - on by default) and PatchSectionedReload
+  (experimental, off by default). Everything else in it is for maintenance
+  only: edit it only when the mod's maintainer tells you to after a game
+  update. There is deliberately no setting in it that can name an address, and
+  the shipped presets contain no [Memory] section at all.
 
 
 UNINSTALL
@@ -226,22 +273,39 @@ TROUBLESHOOTING
 
   "version check bypassed by user"
       You set IgnoreVersionCheck = 1. The build check is off; every other
-      safety check still applies. The line that follows lists them.
+      safety check still applies.
 
   "ini rejected: size limit"
       Your .ini is too large to be a real configuration, so it was ignored
       and built-in defaults were used. Replace it with a shipped preset.
 
-  The log shows the plugin starting, but no lines about writing values
+  The log shows the plugin starting, but no "plan:" lines
       The mod could not confirm where the reload fields are and switched
       itself off on purpose. The game is untouched. Report the log - the
       resolver lines in it are exactly what is needed to diagnose it.
 
+  "no weapon-info class could be confirmed"
+      The mod could not recognise the weapon structure itself and fell back
+      to matching exact values only. Weapons whose values it cannot confirm
+      are left alone this session. Report the log.
+
   "hash not found in memory"
-      That one weapon does not exist in the game's weapon data at all, so
-      nothing can change its reload timing - not this mod, not a file mod.
-      Expected for some of the unreleased/unused weapons. Everything else
-      keeps working.
+      That one weapon name does not exist in the game's data at all, so
+      nothing can change its reload timing. Expected for a few names that are
+      Online-only. Everything else keeps working.
+
+  "mention(s) of the name in memory, none of them its weapon-info structure"
+      The weapon exists, but its data structure was not found this launch.
+      That one weapon keeps its normal speed. Report the log.
+
+  "weapon in hand: ... a gun this plugin does NOT manage"
+      Written the first time you hold such a gun. Report the line - it has the
+      weapon's hash and the game's own name for it.
+
+  "unlisted gun: ..."
+      A gun with no section of its own in the INI was found and will be
+      switched too (IncludeUnlistedGuns = 1). The line says which INI section
+      it uses, or "defaults".
 
   "offset rejected: out of window"
       A forced offset in [Memory] is outside the allowed range and was
@@ -249,24 +313,24 @@ TROUBLESHOOTING
       meant to be set by hand unless the log printed that value for you.
 
   "conditions: good only (stride unresolved)"
-      The mod could only patch the clean-weapon block, not the worn-weapon
-      ones. Reloads still change; the difference between a clean and a worn
-      weapon stays as the game shipped it. Nothing is broken.
+      Only with PatchSectionedReload = 1: the mod could only patch the
+      clean-weapon block, not the worn-weapon ones. Nothing is broken.
 
   "deferred: reloading"
       A profile change landed while you were mid-reload, so the write was
-      postponed by one tick to avoid breaking the animation. Normal.
+      postponed until the reload finished, to avoid breaking the animation.
+      Normal.
 
-  A line saying one weapon was skipped because its current value does not
-  match the startup snapshot
-      Another mod is writing the same reload fields. The mod stops touching
+  "something else writes here"
+      Another mod is writing the same reload field. The mod stops touching
       that one weapon and keeps working on the rest. If you use a weapon
       overhaul, set Mode = manual in [Profiles] for predictable behaviour.
 
   "restore skipped"
-      One weapon's address could not be validated while restoring the
-      original values, so nothing was written to it. The other weapons were
-      restored normally. Restart the game to be sure of a clean state.
+      One weapon's value could not be put back safely while restoring the
+      original values (it was changed by something else, or the structure is
+      gone), so nothing was written to it. The other weapons were restored
+      normally. Restart the game to be sure of a clean state.
 
   "log size limit reached"
       The log hit MaxLogSizeMB and stopped being written. The mod keeps
