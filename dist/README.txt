@@ -98,9 +98,10 @@ WHAT COUNTS AS A FIGHT
     - with PlayerShooting = 1 (default): any shot at all
 
   While a fight is on, every shot you fire keeps it on (ShootingSustainsCombat),
-  so a cooldown never kicks in between two shots. Hunters who want the slow
-  reload while shooting game set PlayerShooting = 0 - shots at people still
-  start a fight.
+  so a cooldown never kicks in between two shots: a shot counts for two
+  seconds, and the cooldown starts two seconds after your last one. Hunters who
+  want the slow reload while shooting game set PlayerShooting = 0 - shots at
+  people still start a fight.
 
 
 HOW TO CONFIRM IT LOADED
@@ -122,6 +123,13 @@ HOW TO CONFIRM IT LOADED
   SCANNING while the mod starts (a few seconds after loading), then CALM,
   COMBAT or COOLDOWN with the time left, and on a second line the gun in your
   hands with the reload rate the mod has put there - or "not managed".
+
+  Two revolvers or pistols drawn at once: two identical guns are one line
+  ending in "x2" (they share one set of weapon data, so one reload rate); two
+  different guns are two lines, the right hand first, the left hand below.
+  A long gun carried lowered in the left hand is not shown - it cannot fire
+  until you take it up again. Either way, every gun you hold reloads at its own
+  CALM or COMBAT speed.
 
   If there is no log file at all, the plugin was never loaded and the problem
   is the ASI loader or ScriptHookRDR2, not this mod.
@@ -156,7 +164,11 @@ HOW TO CONFIRM IT LOADED
 HOTKEYS
 
   F7   Turn the whole mod off and on. Turning it off restores the original
-       values immediately - no restart needed.
+       values immediately - no restart needed. "Original" means the values
+       the game loaded at startup from the weapons.ymt you have installed:
+       stock speed with a stock file, the slower speed with an overhaul or a
+       file of your own that slows reloads. Turning it off also ends a fight
+       forced with F8; turning it back on always starts in calm mode.
   F8   Force combat mode, for testing. Hold a rifle, press F8, reload, and you
        should see the fast reload. Press it again to stop forcing it; the mod
        then leaves combat the normal way, after the cooldown.
@@ -305,7 +317,10 @@ TROUBLESHOOTING
   "unlisted gun: ..."
       A gun with no section of its own in the INI was found and will be
       switched too (IncludeUnlistedGuns = 1). The line says which INI section
-      it uses, or "defaults".
+      it uses, or "defaults". Only hand-held firearms qualify - the game must
+      call it a gun AND a revolver, pistol, repeater, rifle, shotgun or sniper
+      rifle; "0 of them hand-held guns" is normal when the INI covers every
+      gun you have.
 
   "offset rejected: out of window"
       A forced offset in [Memory] is outside the allowed range and was
