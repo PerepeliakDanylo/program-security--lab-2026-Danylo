@@ -1,0 +1,4 @@
+# Залежності ЛР7 (вправа цілісності й модуль маніфеста/підпису):
+#   python -m venv .venv && .venv\Scripts\activate   (Windows)
+#   pip install -r requirements.txt
+cryptography>=42.0
