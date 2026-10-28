@@ -51,3 +51,8 @@ labs/*/.venv/
 labs/lab4/targets.txt
 __pycache__/
 *.pyc
+
+# tools/drs_release — локальні дані супроводжувача, не комітити
+tools/drs_release/drs_release.accounts.json
+tools/drs_release/drs_release.audit.log
+tools/drs_release/.venv/
