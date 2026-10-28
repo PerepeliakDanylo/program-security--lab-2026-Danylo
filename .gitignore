@@ -45,3 +45,9 @@ DynamicReloadSpeed.generated.ini
 # Артефакти прогону препроцесора
 DynamicReloadSpeed.unhashed.ini
 weapons_reload_unhashed.csv
+
+# labs/ — генерується під час запуску вправ, не комітити
+labs/*/.venv/
+labs/lab4/targets.txt
+__pycache__/
+*.pyc
