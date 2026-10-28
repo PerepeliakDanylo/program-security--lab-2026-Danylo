@@ -3,9 +3,9 @@
 | | |
 | --- | --- |
 | Назва | Огляд системи — RDR2 Dynamic Reload |
-| Версія | 0.1.2 |
+| Версія | 0.2.0 |
 | Статус | Draft |
-| Останнє оновлення | 2026-09-29 |
+| Останнє оновлення | 2026-10-28 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | [`requirements.md`](requirements.md), [`glossary.md`](glossary.md), [`../architecture/architecture.md`](../architecture/architecture.md), [`../architecture/dfd.md`](../architecture/dfd.md) |
 
@@ -20,7 +20,7 @@
 | Компонент | Технологія | Роль |
 |---|---|---|
 | `ymt-tweaker` | Python 3.8+, тільки стандартна бібліотека (`xml.etree.ElementTree`, `re`, `csv`) | Офлайн-препроцесор: переписує три числові поля у метафайлі `weapons.ymt`, формує CSV-звіт і готовий INI-конфіг для плагіна |
-| `DynamicReloadSpeed.asi` | C++17/20, x64, MSVC `/MT`, ScriptHookRDR2 SDK | Рантайм-плагін: визначає стан бою та перемикає ті самі три поля напряму в пам'яті процесу гри |
+| `DynamicReloadSpeed.asi` | C++17/20, x64, MSVC `/MT`, ScriptHookRDR2 SDK | Рантайм-плагін: визначає стан бою та перемикає ті самі поля (щонайбільше три; типово — `AnimReloadRate`) напряму в пам'яті процесу гри |
 
 Обидва компоненти працюють рівно з трьома числовими полями:
 

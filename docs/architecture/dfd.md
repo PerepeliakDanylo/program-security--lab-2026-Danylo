@@ -3,9 +3,9 @@
 | | |
 | --- | --- |
 | Назва | Діаграма потоків даних — RDR2 Dynamic Reload |
-| Версія | 0.2.1 |
+| Версія | 0.3.0 |
 | Статус | Draft |
-| Останнє оновлення | 2026-09-29 |
+| Останнє оновлення | 2026-10-28 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | [`architecture.md`](architecture.md), [`../specification/requirements.md`](../specification/requirements.md), [`../internal_spec/AsiPlugin/business_logic.md`](../internal_spec/AsiPlugin/business_logic.md), [`../specification/glossary.md`](../specification/glossary.md) |
 
@@ -199,7 +199,7 @@ flowchart LR
 | P9 | Завантаження та розбір INI, значення за замовчуванням | `asi` / `Config` | F30, F32 | F33, F56 |
 | P10 | Перевірка збірки гри та виявлення мережевої сесії | `asi` / `Script` | F35, F35a | F36 |
 | P11 | Пошук цілей за joaat-хешем, консенсус офсета, побудова мап `hash → структура` | `asi` / `MemScan` | F34 | F37, F38, F55 |
-| P12 | Зняття знімка трьох оригінальних значень | `asi` / `WeaponPatcher` | F38, F39 | F40 |
+| P12 | Зняття знімка оригінальних значень полів, що патчаться | `asi` / `WeaponPatcher` | F38, F39 | F40 |
 | P13 | Розв'язання джерел профілів, фолбеки, кламп | `asi` / `Config` | F33, F41 | F42 |
 | P14 | Опитування сигналів бою, зведене рішення | `asi` / `CombatDetector` | F43 | F44, F54 |
 | P15 | Автомат станів `CALM / COMBAT / COOLDOWN` | `asi` / `Script` | F36, F44, F59 | F45, F49, F52, F60 |
