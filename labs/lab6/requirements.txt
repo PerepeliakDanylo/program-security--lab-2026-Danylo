@@ -1,0 +1,4 @@
+# Залежності ЛР6 (вправа AES-CTR і криптомодуль інструмента):
+#   python -m venv .venv && .venv\Scripts\activate   (Windows)
+#   pip install -r requirements.txt
+cryptography>=42.0
