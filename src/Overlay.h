@@ -3,7 +3,9 @@
 // Line 1: plugin version, state name (with the remaining cooldown while in
 // COOLDOWN) and the hostile count. Line 2 (1.2): the weapon in the player's
 // hands and the reload rate the plugin has put there - or "not managed" - so a
-// weapon that does not switch can be identified on the spot. Neither line ever
+// weapon that does not switch can be identified on the spot; with two identical
+// guns drawn it ends in "x2" (1.2.1). Line 3 (1.2.1): the left-hand gun when two
+// DIFFERENT guns are dual wielded; line 2 is then the right hand. No line ever
 // shows a file path, an address, or anything else that would leak where the game
 // is installed: a screenshot of the overlay is something players post publicly.
 //
@@ -35,6 +37,9 @@ public:
     // Second line. nullptr or "" hides it. Copied; cheap when unchanged.
     void setDetail(const char* text);
 
+    // Third line (1.2.1), the left-hand gun. Same rules as setDetail().
+    void setSecondHand(const char* text);
+
 private:
     Overlay() = default;
 
@@ -47,6 +52,7 @@ private:
     int         m_lastCooldown  = -2;
     char        m_text[128]     = {};
     char        m_detail[128]   = {};
+    char        m_secondHand[128] = {};
 };
 
 } // namespace drs

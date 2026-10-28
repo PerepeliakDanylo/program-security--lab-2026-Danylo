@@ -22,7 +22,7 @@ namespace drs {
 
 namespace {
 
-constexpr const char*   kPluginVersion  = "1.2.0";
+constexpr const char*   kPluginVersion  = "1.2.1";
 constexpr int           kMaxTickErrors  = 10;
 
 // Start-up timing (1.1). Weapon data is parsed at game boot, long before any
@@ -51,23 +51,37 @@ bool labelLooksMounted(const char* label)
            std::strstr(label, "GATLING") != nullptr || std::strstr(label, "MAXIM") != nullptr;
 }
 
+std::string upperCopy(const char* text)
+{
+    std::string name(text);
+    for (char& c : name)
+    {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return name;
+}
+
 // The game's label for a weapon is "WNS_" + the rest of its internal name in the
 // cases checked so far ("WNS_INVALID" for an unknown hash). "WEAPON_" + that rest
 // is therefore the likely internal name; hashing it back tells whether it IS.
 // Either way it is used to look up an INI section by prefix, so an unknown
-// double-action revolver still gets the double-action section.
+// double-action revolver still gets the double-action section. Some weapons
+// (1.2.0 logs: WEAPON_RAMMED_BY_CAR) carry their internal name itself as the
+// label; that is hashed back too (1.2.1).
 std::string nameFromLabel(std::uint32_t hash, const char* label, bool& verified)
 {
     verified = false;
     if (startsWith(label, "WNS_") && label[4] != '\0')
     {
         std::string name = "WEAPON_";
-        name += (label + 4);
-        for (char& c : name)
-        {
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        }
+        name += upperCopy(label + 4);
         verified = (joaat(name.c_str()) == hash);   // joaat lower-cases by itself
+        return name;
+    }
+    if (startsWith(label, "WEAPON_") && label[7] != '\0')
+    {
+        std::string name = upperCopy(label);
+        verified = (joaat(name.c_str()) == hash);
         return name;
     }
     if (label != nullptr && label[0] != '\0')
@@ -129,7 +143,18 @@ void Script::disablePermanently(const char* reason)
     m_state          = ModState::DisabledPermanent;
     m_stateEnteredMs = GetTickCount64();
     m_pendingWrite   = false;
+    clearHeldDisplay();
+}
+
+void Script::clearHeldDisplay()
+{
     Overlay::instance().setDetail(nullptr);
+    Overlay::instance().setSecondHand(nullptr);
+    // Forget what was shown, so the hands are described afresh if the mod comes
+    // back on (both hashes differ from whatever is held then).
+    m_right.hash      = 0u;
+    m_left.hash       = 0u;
+    m_heldDetailDirty = true;
 }
 
 bool Script::versionGatePasses()
@@ -383,7 +408,9 @@ void Script::adoptUnlistedGuns()
             ++excluded;
             continue;
         }
-        if (!game::isWeaponAGun(hash))
+        // 1.2.1: the Gun flag AND a firearm class. The flag alone let the
+        // vehicle-damage pseudo-weapons through (1.2.0 logs).
+        if (!game::isHandheldFirearm(hash))
         {
             ++notGuns;
             continue;
@@ -419,8 +446,8 @@ void Script::adoptUnlistedGuns()
         }
     }
 
-    DRS_INFO("unlisted: %zu other weapon-info names, %zu of them guns (%d structure(s) "
-             "adopted), %d not guns, %d excluded (mounted guns, bows)",
+    DRS_INFO("unlisted: %zu other weapon-info names, %zu of them hand-held guns (%d "
+             "structure(s) adopted), %d not hand-held guns, %d excluded (mounted guns, bows)",
              hashes.size(), guns.size(), adopted, notGuns, excluded);
 
     m_patcher.releaseUnlisted();
@@ -527,17 +554,27 @@ void Script::handleRequests(std::uint64_t nowMs)
             DRS_INFO("hotkey: mod switched back on");
             m_state          = ModState::Calm;
             m_stateEnteredMs = nowMs;
-            m_heldHash       = 0u;   // re-describe the weapon in hand
             requestProfile(false);
         }
         else
         {
+            // "Boot values" are what the game loaded at start-up from the
+            // installed weapons.ymt: stock with a stock file, already slower with
+            // an overhaul or a hand-slowed file (1.2.0 runs 1 and 2).
             DRS_INFO("hotkey: mod switched off, restoring boot values");
             m_patcher.restoreAll();
             m_pendingWrite   = false;
             m_state          = ModState::DisabledByUser;
             m_stateEnteredMs = nowMs;
-            Overlay::instance().setDetail(nullptr);
+            clearHeldDisplay();
+            // 1.2.1: a fight forced with the hotkey ends with the mod. In 1.2.0 the
+            // flag outlived the pause, so switching back on went CALM -> COMBAT
+            // (forced by hotkey) at once - against "back on: always CALM".
+            if (m_forcedCombat)
+            {
+                m_forcedCombat = false;
+                DRS_INFO("hotkey: forced COMBAT off (the mod was switched off)");
+            }
         }
     }
 
@@ -561,45 +598,60 @@ int Script::cooldownTenthsLeft(std::uint64_t nowMs) const
     return static_cast<int>(remaining / 100u);
 }
 
-void Script::refreshHeldWeapon(int playerPedHandle)
+bool Script::firstTimeInHand(HeldHand& hand, std::uint32_t hash)
 {
-    if (playerPedHandle == 0)
+    for (int i = 0; i < hand.seenCount; ++i)
     {
-        return;
-    }
-
-    const std::uint32_t held    = game::currentWeaponHash(playerPedHandle);
-    const bool          changed = (held != m_heldHash);
-    m_heldHash = held;
-
-    // Same weapon, same values: nothing to describe, format or log (NFR-01 - this
-    // runs at DetectorHz on the script thread).
-    if (!changed && !m_heldDetailDirty)
-    {
-        return;
-    }
-    m_heldDetailDirty = false;
-
-    const HeldWeaponStatus status = m_patcher.describe(held);
-
-    if (changed && !status.managed)
-    {
-        // Only for a weapon the plugin does not manage: is it a gun at all, and
-        // what does the game call it? Two natives, once per weapon change.
-        m_heldIsGun    = (held != 0u) && (held != kUnarmed) && game::isWeaponAGun(held);
-        m_heldLabel[0] = '\0';
-        if (m_heldIsGun)
+        if (hand.seen[i] == hash)
         {
-            game::weaponLabel(held, m_heldLabel, sizeof(m_heldLabel));
+            return false;
         }
     }
-    else if (changed)
+    if (hand.seenCount < HeldHand::kSeenCapacity)
     {
-        m_heldIsGun    = true;
-        m_heldLabel[0] = '\0';
+        hand.seen[hand.seenCount] = hash;
+        ++hand.seenCount;
     }
+    return true;
+}
 
-    char detail[128] = {};
+bool Script::isSidearmHash(std::uint32_t hash) const
+{
+    if (game::isSidearm(hash))
+    {
+        return true;
+    }
+    // Fallback for the plugin's own guns, should the class natives not answer for
+    // one of them: its internal name says what it is. Once per new pair only -
+    // describe() builds a string.
+    const HeldWeaponStatus status = m_patcher.describe(hash);
+    return status.known && (startsWith(status.name.c_str(), "WEAPON_REVOLVER_") ||
+                            startsWith(status.name.c_str(), "WEAPON_PISTOL_"));
+}
+
+void Script::describeHand(HeldHand& hand, const HeldWeaponStatus& status)
+{
+    hand.label[0] = '\0';
+    if (status.managed)
+    {
+        hand.isGun = true;
+        return;
+    }
+    // Only for a weapon the plugin does not manage: is it a gun at all, and what
+    // does the game call it? Two natives, once per weapon change.
+    hand.isGun = (hand.hash != 0u) && (hand.hash != kUnarmed) && game::isWeaponAGun(hand.hash);
+    if (hand.isGun)
+    {
+        game::weaponLabel(hand.hash, hand.label, sizeof(hand.label));
+    }
+}
+
+void Script::formatHand(char* out, std::size_t size, const HeldHand& hand,
+                        const HeldWeaponStatus& status, const char* suffix) const
+{
+    out[0] = '\0';
+    const char* gap   = (suffix != nullptr) ? " " : "";
+    const char* times = (suffix != nullptr) ? suffix : "";
     if (status.managed)
     {
         const char* shown = status.name.c_str();
@@ -607,62 +659,152 @@ void Script::refreshHeldWeapon(int playerPedHandle)
         {
             shown += 7;
         }
-        _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s  |  reload rate %.2f%s",
-                    shown, static_cast<double>(status.value),
+        _snprintf_s(out, size, _TRUNCATE, "%s%s%s  |  reload rate %.2f%s", shown, gap, times,
+                    static_cast<double>(status.value),
                     status.instances > 1 ? "  (+copies)" : "");
     }
-    else if (m_heldIsGun)
+    else if (hand.isGun)
     {
         if (status.known)
         {
-            _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s  |  not managed",
-                        status.name.c_str());
+            _snprintf_s(out, size, _TRUNCATE, "%s%s%s  |  not managed", status.name.c_str(),
+                        gap, times);
         }
-        else if (m_heldLabel[0] != '\0')
+        else if (hand.label[0] != '\0')
         {
-            _snprintf_s(detail, sizeof(detail), _TRUNCATE, "%s  |  not managed", m_heldLabel);
+            _snprintf_s(out, size, _TRUNCATE, "%s%s%s  |  not managed", hand.label, gap, times);
         }
         else
         {
-            _snprintf_s(detail, sizeof(detail), _TRUNCATE, "0x%08X  |  not managed", held);
+            _snprintf_s(out, size, _TRUNCATE, "0x%08X%s%s  |  not managed", hand.hash, gap,
+                        times);
         }
     }
-    Overlay::instance().setDetail(detail);
+    // Unarmed or not a gun: the line stays empty and the overlay hides it.
+}
 
-    // One info line the first time each gun is taken in hand this session: the
-    // quickest way for a player to report "this one does not switch".
-    if (!changed || held == 0u || !(status.managed || m_heldIsGun))
+void Script::logHand(const char* which, HeldHand& hand, const HeldWeaponStatus& status,
+                     const char* note)
+{
+    // One info line the first time each gun is taken in this hand this session:
+    // the quickest way for a player to report "this one does not switch".
+    if (hand.hash == 0u || !(status.managed || hand.isGun))
     {
         return;
     }
-    for (int i = 0; i < m_seenWeaponCount; ++i)
+    if (!firstTimeInHand(hand, hand.hash))
     {
-        if (m_seenWeapons[i] == held)
-        {
-            DRS_DEBUG("weapon in hand: 0x%08X again", held);
-            return;
-        }
-    }
-    if (m_seenWeaponCount < kSeenCapacity)
-    {
-        m_seenWeapons[m_seenWeaponCount] = held;
-        ++m_seenWeaponCount;
+        DRS_DEBUG("%s: 0x%08X again", which, hand.hash);
+        return;
     }
 
     if (status.managed)
     {
-        DRS_INFO("weapon in hand: %s - managed (%d structure(s)), reload rate now %.4f",
-                 status.name.c_str(), status.instances, static_cast<double>(status.value));
+        DRS_INFO("%s: %s - managed (%d structure(s)), reload rate now %.4f%s", which,
+                 status.name.c_str(), status.instances, static_cast<double>(status.value), note);
     }
     else if (status.known)
     {
-        DRS_INFO("weapon in hand: %s - known name, but no weapon structure was bound for it "
-                 "(see the resolver lines)", status.name.c_str());
+        DRS_INFO("%s: %s - known name, but no weapon structure was bound for it "
+                 "(see the resolver lines)%s", which, status.name.c_str(), note);
     }
     else
     {
-        DRS_INFO("weapon in hand: hash 0x%08X, label %s - a gun this plugin does NOT manage",
-                 held, m_heldLabel[0] != '\0' ? m_heldLabel : "none");
+        DRS_INFO("%s: hash 0x%08X, label %s - a gun this plugin does NOT manage%s", which,
+                 hand.hash, hand.label[0] != '\0' ? hand.label : "none", note);
+    }
+}
+
+void Script::refreshHeldWeapon(int playerPedHandle)
+{
+    if (playerPedHandle == 0)
+    {
+        return;
+    }
+
+    const std::uint32_t held = game::currentWeaponHash(playerPedHandle);
+
+    // 1.2.1: the left hand counts only for a real dual-wield pair - a weapon
+    // object in the secondary hand AND two sidearms. A long gun carried lowered
+    // in the left hand while a pistol is drawn is never shown: the 1.2.0 test
+    // showed only the gun that can fire, and that is the intended behaviour.
+    std::uint32_t left = 0u;
+    if (held != 0u && held != kUnarmed)
+    {
+        const std::uint32_t secondary = game::secondaryWeaponHash(playerPedHandle);
+        if (secondary != 0u && secondary != kUnarmed &&
+            game::weaponObjectInSecondaryHand(playerPedHandle))
+        {
+            if (held != m_pairRight || secondary != m_pairLeft)
+            {
+                m_pairRight      = held;
+                m_pairLeft       = secondary;
+                m_pairIsSidearms = isSidearmHash(held) && isSidearmHash(secondary);
+            }
+            if (m_pairIsSidearms)
+            {
+                left = secondary;
+            }
+        }
+    }
+
+    const bool rightChanged = (held != m_right.hash);
+    const bool leftChanged  = (left != m_left.hash);
+    m_right.hash = held;
+    m_left.hash  = left;
+
+    // Same weapons, same values: nothing to describe, format or log (NFR-01 - this
+    // runs at DetectorHz on the script thread).
+    if (!rightChanged && !leftChanged && !m_heldDetailDirty)
+    {
+        return;
+    }
+    m_heldDetailDirty = false;
+
+    const HeldWeaponStatus status = m_patcher.describe(held);
+    if (rightChanged)
+    {
+        describeHand(m_right, status);
+    }
+
+    // Two identical guns: one line ending in "x2" - they share one weapon
+    // structure, so one reload rate. Two different guns: line 2 is the right
+    // hand, line 3 the left (1.2.1).
+    const bool sameGunInBoth = (left != 0u) && (left == held);
+
+    char line[128] = {};
+    formatHand(line, sizeof(line), m_right, status, sameGunInBoth ? "x2" : nullptr);
+    Overlay::instance().setDetail(line);
+
+    HeldWeaponStatus leftStatus;
+    if (left != 0u)
+    {
+        leftStatus = sameGunInBoth ? status : m_patcher.describe(left);
+        if (leftChanged)
+        {
+            describeHand(m_left, leftStatus);
+        }
+    }
+    if (left != 0u && !sameGunInBoth)
+    {
+        char leftLine[128] = {};
+        formatHand(leftLine, sizeof(leftLine), m_left, leftStatus, nullptr);
+        Overlay::instance().setSecondHand(leftLine);
+    }
+    else
+    {
+        Overlay::instance().setSecondHand(nullptr);
+    }
+
+    if (rightChanged)
+    {
+        logHand("weapon in hand", m_right, status, "");
+    }
+    if (leftChanged && left != 0u)
+    {
+        logHand("weapon in left hand", m_left, leftStatus,
+                sameGunInBoth ? " (dual wield, the same gun as the right hand: shown as x2)"
+                              : " (dual wield, shown on the third line)");
     }
 }
 

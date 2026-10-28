@@ -29,6 +29,7 @@
 #include "WeaponPatcher.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 namespace drs {
@@ -71,6 +72,7 @@ private:
     void requestProfile(bool combat);
     void flushPendingWrite();
     void refreshHeldWeapon(int playerPedHandle);
+    void clearHeldDisplay();
     bool versionGatePasses();
     void disablePermanently(const char* reason);
     void publishHotkeys();
@@ -96,18 +98,44 @@ private:
     bool m_forcedCombat        = false;
     bool m_onlineNotified      = false;
 
-    // The weapon in the player's hands (1.2): what the overlay's second line and
-    // the "weapon in hand" log line show. Natives are asked only when it changes.
-    static constexpr int kSeenCapacity = 64;
-    std::uint32_t m_heldHash                   = 0u;
+    // The weapons in the player's hands (1.2; the left hand since 1.2.1): what the
+    // overlay's second and third lines and the "weapon in (left) hand" log lines
+    // show. The label natives are asked only when a hand's weapon changes.
+    struct HeldHand
+    {
+        static constexpr int kSeenCapacity = 64;
+        std::uint32_t hash                = 0u;
+        bool          isGun               = false;   // asked only for a gun the plugin does not manage
+        char          label[64]           = {};
+        std::uint32_t seen[kSeenCapacity] = {};      // first time in this hand = one info line
+        int           seenCount           = 0;
+    };
+    // Describes one hand after its weapon changed: whether an unmanaged weapon is
+    // a gun and the game's label for it (two natives, once per change).
+    void describeHand(HeldHand& hand, const HeldWeaponStatus& status);
+    // One overlay line for a hand; suffix is "x2" for two identical guns.
+    void formatHand(char* out, std::size_t size, const HeldHand& hand,
+                    const HeldWeaponStatus& status, const char* suffix) const;
+    // One info line the first time a gun is taken in this hand this session.
+    void logHand(const char* which, HeldHand& hand, const HeldWeaponStatus& status,
+                 const char* note);
+    // Revolver or pistol: the game's class natives, else the WEAPON_REVOLVER_ /
+    // WEAPON_PISTOL_ prefix of a name the plugin knows. Called once per new pair.
+    bool isSidearmHash(std::uint32_t hash) const;
+    // true the first time `hash` is seen in this hand this session.
+    static bool firstTimeInHand(HeldHand& hand, std::uint32_t hash);
+
+    HeldHand m_right;   // primary hand
+    HeldHand m_left;    // secondary hand; hash != 0 only for a dual-wield pair
+    // The last pair of weapons seen in the two hands and whether both are
+    // sidearms - classified once per pair, not at every poll (NFR-01).
+    std::uint32_t m_pairRight      = 0u;
+    std::uint32_t m_pairLeft       = 0u;
+    bool          m_pairIsSidearms = false;
     // Set when the value shown for the weapon in hand may have changed (a profile
     // was written). Without a change of weapon or of values, refreshHeldWeapon()
     // returns before describing or formatting anything (NFR-01).
-    bool          m_heldDetailDirty            = true;
-    bool          m_heldIsGun                  = false;
-    char          m_heldLabel[64]              = {};
-    std::uint32_t m_seenWeapons[kSeenCapacity] = {};
-    int           m_seenWeaponCount            = 0;
+    bool     m_heldDetailDirty = true;
 
     std::atomic<bool> m_requestToggle{false};
     std::atomic<bool> m_requestForceCombat{false};

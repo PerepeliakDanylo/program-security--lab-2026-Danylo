@@ -1983,6 +1983,17 @@ bool WeaponPatcher::restoreField(FieldTarget& field, const char* what)
         DRS_ERROR("restore skipped: %s (write faulted)", what);
         return false;
     }
+    // 1.2.1: the same read-back as every write (SR-11), and on debug level one line
+    // per field with all three numbers - what FR-28 / AT-32 ask the log to show.
+    float readBack = 0.0f;
+    if (!MemScan::readFloat(field.address, readBack) || !closeEnough(readBack, field.snapshot, 0.0005f))
+    {
+        DRS_ERROR("restore: %s readback mismatch, wrote %.4f read %.4f", what, field.snapshot,
+                  readBack);
+        return false;
+    }
+    DRS_DEBUG("restored: %s %.4f -> %.4f (boot snapshot), read back %.4f", what, current,
+              field.snapshot, readBack);
     field.firstWriteDone = false;
     field.lastWritten    = field.snapshot;
     return true;

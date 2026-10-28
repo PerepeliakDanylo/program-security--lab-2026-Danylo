@@ -12,6 +12,22 @@ namespace {
 constexpr float kLeft        = 0.02f;
 constexpr float kFirstLine   = 0.02f;
 constexpr float kSecondLine  = 0.05f;
+constexpr float kThirdLine   = 0.08f;
+
+// Copies text into a line buffer; nullptr or "" clears it. strcmp first, so an
+// unchanged line costs one comparison and no copy.
+void setLine(char* line, std::size_t size, const char* text)
+{
+    if (text == nullptr || text[0] == '\0')
+    {
+        line[0] = '\0';
+        return;
+    }
+    if (std::strcmp(text, line) != 0)
+    {
+        strncpy_s(line, size, text, _TRUNCATE);
+    }
+}
 
 } // namespace
 
@@ -43,15 +59,12 @@ void Overlay::configure(const Config& config)
 
 void Overlay::setDetail(const char* text)
 {
-    if (text == nullptr || text[0] == '\0')
-    {
-        m_detail[0] = '\0';
-        return;
-    }
-    if (std::strcmp(text, m_detail) != 0)
-    {
-        strncpy_s(m_detail, sizeof(m_detail), text, _TRUNCATE);
-    }
+    setLine(m_detail, sizeof(m_detail), text);
+}
+
+void Overlay::setSecondHand(const char* text)
+{
+    setLine(m_secondHand, sizeof(m_secondHand), text);
 }
 
 void Overlay::update(const char* stateName, int hostileCount, int cooldownTenths,
@@ -91,6 +104,10 @@ void Overlay::update(const char* stateName, int hostileCount, int cooldownTenths
     if (m_detail[0] != '\0')
     {
         game::drawDebugText(m_detail, kLeft, kSecondLine);
+    }
+    if (m_secondHand[0] != '\0')
+    {
+        game::drawDebugText(m_secondHand, kLeft, kThirdLine);
     }
 }
 

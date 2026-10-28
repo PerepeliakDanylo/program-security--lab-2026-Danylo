@@ -94,10 +94,33 @@ bool deadEyeCheckAvailable();
 int hostilePedsNearPlayer(int playerPed, float radius, int maxNearest);
 
 // Hash of the weapon currently in the player's hands, 0 if unavailable.
+// This is the PRIMARY hand (attach point 0) - the right hand.
 std::uint32_t currentWeaponHash(int ped);
+
+// 1.2.1: the weapon in the SECONDARY hand (attach point 1,
+// WEAPON_ATTACH_POINT_HAND_SECONDARY) - the left-hand gun when dual wielding.
+// 0 if the game reports none.
+std::uint32_t secondaryWeaponHash(int ped);
+
+// 1.2.1: true when a weapon OBJECT is attached to the secondary hand. Guards the
+// dual-wield readout against a hash the game may report for a hand that is in
+// fact empty.
+bool weaponObjectInSecondaryHand(int ped);
 
 // WEAPON::IS_WEAPON_A_GUN - true if the weapon info carries the Gun flag.
 bool isWeaponAGun(std::uint32_t weaponHash);
+
+// 1.2.1: revolver or pistol, by the game's own weapon class
+// (WEAPON::IS_WEAPON_REVOLVER / WEAPON::IS_WEAPON_PISTOL). The only guns that can
+// be dual wielded.
+bool isSidearm(std::uint32_t weaponHash);
+
+// 1.2.1: a hand-held firearm: IS_WEAPON_A_GUN AND one of the six firearm classes
+// (revolver, pistol, repeater, rifle, shotgun, sniper rifle). IS_WEAPON_A_GUN
+// alone also answers true for the vehicle-damage pseudo-weapons
+// WEAPON_RAMMED_BY_CAR and WEAPON_RUN_OVER_BY_CAR (1.2.0 logs), which 1.2.0 then
+// adopted as "unlisted guns".
+bool isHandheldFirearm(std::uint32_t weaponHash);
 
 // WEAPON::_GET_WEAPON_NAME - the weapon's text label, e.g. "WNS_REVOLVER_CATTLEMAN"
 // ("WNS_INVALID" for an unknown hash). Copied into `out` through a guarded read.

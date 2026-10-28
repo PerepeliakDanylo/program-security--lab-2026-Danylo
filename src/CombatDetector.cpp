@@ -8,6 +8,22 @@
 
 namespace drs {
 
+namespace {
+
+// 1.2.1: how long one shot counts, for PlayerShooting and for "a shot keeps the
+// fight on". A shot is an instant; 1.2.0 counted it for exactly one poll (250 ms
+// at DetectorHz = 4), so with shots further apart than that the state went
+// COMBAT -> COOLDOWN between two shots and COOLDOWN -> COMBAT on the next one,
+// four or five times a second in the overlay and two log lines per shot (1.2.0
+// run 1 log, 17:44 and 17:45). Values were never affected - COOLDOWN keeps the
+// COMBAT values - but the state the player sees must not flicker. Two seconds
+// bridge the gap between aimed shots of any hand-held gun, bolt-action rifles
+// included, and delay the start of the cooldown after the LAST shot by at most
+// that much.
+constexpr std::uint64_t kShotHoldMs = 2000;
+
+} // namespace
+
 void CombatDetector::configure(const Config& config)
 {
     m_general = config.general();
@@ -16,8 +32,8 @@ void CombatDetector::configure(const Config& config)
     m_lastPedScanMs  = 0;
     m_lastDamageMs   = 0;
     m_lastAttackMs   = 0;
+    m_lastShotMs     = 0;
     m_cachedHostiles = 0;
-    m_shotSincePoll  = false;
 
     if (m_signals.wantedByLaw && !game::wantedCheckAvailable() && !m_warnedNoWanted)
     {
@@ -61,7 +77,7 @@ void CombatDetector::sampleTick(int playerPedHandle, int playerIdHandle, std::ui
         return;
     }
 
-    m_shotSincePoll = true;
+    m_lastShotMs = nowMs;
 
     // Who was the shot aimed at? Asked only in the frames where the player is
     // actually firing, so these natives are not on the per-frame budget.
@@ -81,8 +97,8 @@ SignalSnapshot CombatDetector::poll(int playerPedHandle, int playerIdHandle,
 {
     SignalSnapshot snapshot;
 
-    const bool shot = m_shotSincePoll;
-    m_shotSincePoll = false;
+    // A shot in the last kShotHoldMs (1.2.1; 1.2.0: a shot since the last poll).
+    const bool shot = (m_lastShotMs != 0) && (nowMs - m_lastShotMs <= kShotHoldMs);
 
     if (playerPedHandle == 0)
     {

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(DynamicReloadSpeed VERSION 1.2.0 LANGUAGES CXX)
+project(DynamicReloadSpeed VERSION 1.2.1 LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
 # RDR2 Dynamic Reload — ASI plugin

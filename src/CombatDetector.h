@@ -18,6 +18,8 @@
 //     game in CALM still never starts a fight.
 //   * (1.2) Shots are latched per frame. 1.1 asked IS_PED_SHOOTING four times a
 //     second, so most shots fell between two questions.
+//   * (1.2.1) A shot counts for two seconds, not for one poll: 1.2.0 flipped
+//     COMBAT -> COOLDOWN between two shots and back on the next one.
 
 #pragma once
 
@@ -30,7 +32,7 @@ namespace drs {
 
 struct SignalSnapshot
 {
-    bool shooting        = false;   // PlayerShooting: any shot since the last poll
+    bool shooting        = false;   // PlayerShooting: a shot in the last 2 s (1.2.1)
     bool aiming          = false;
     bool melee           = false;
     bool recentDamage    = false;
@@ -77,8 +79,8 @@ private:
     std::uint64_t  m_lastPedScanMs   = 0;
     std::uint64_t  m_lastDamageMs    = 0;
     std::uint64_t  m_lastAttackMs    = 0;
+    std::uint64_t  m_lastShotMs      = 0;   // frame time of the player's last shot
     int            m_cachedHostiles  = 0;
-    bool           m_shotSincePoll   = false;
     bool           m_warnedNoWanted  = false;
     bool           m_warnedNoDeadEye = false;
 };

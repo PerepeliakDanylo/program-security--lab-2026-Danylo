@@ -7,8 +7,9 @@
 //  database (https://alloc8or.re/rdr3/nativedb/ — rdr3, NOT rdr2, that URL does
 //  not exist) and is recorded in docs/NATIVES.md with its hash and exact
 //  signature. The natives added in 1.2 (section 3.6 there) were checked on
-//  2026-10-24 against the generated natives.h this project builds with. The
-//  expected number of compile errors here is therefore zero.
+//  2026-10-24, and those added in 1.2.1 (section 3.7) on 2026-10-27, against the
+//  generated natives.h this project builds with. The expected number of compile
+//  errors here is therefore zero.
 //
 //  If one does appear, it means the natives.h you generated differs from what
 //  was checked. Procedure, in this order:
@@ -145,6 +146,12 @@ bool isHumanVictim(Entity entity, int playerPedHandle)
 // The ped pool has no documented upper bound for story mode; 1024 handles is
 // far above anything RDR2 streams in at once and costs 4 KB, once.
 constexpr int kPedBufferSize = 1024;
+
+// eWeaponAttachPoint, from the native database's comment on SET_CURRENT_PED_WEAPON
+// (GET_CURRENT_PED_WEAPON refers to it): WEAPON_ATTACH_POINT_HAND_PRIMARY = 0,
+// WEAPON_ATTACH_POINT_HAND_SECONDARY = 1. Recorded in docs/NATIVES.md 3.7.
+constexpr int kAttachHandPrimary   = 0;
+constexpr int kAttachHandSecondary = 1;
 
 struct NearPed
 {
@@ -436,8 +443,27 @@ std::uint32_t currentWeaponHash(int ped)
     // parameter as `Hash&` and takes the address itself; the 2019 SDK header
     // declared it as `Hash*`. Passing &weapon here compiles against the wrong
     // one of the two and writes the weapon hash over a pointer.
-    WEAPON::GET_CURRENT_PED_WEAPON(ped, weapon, TRUE, 0, FALSE);
+    WEAPON::GET_CURRENT_PED_WEAPON(ped, weapon, TRUE, kAttachHandPrimary, FALSE);
     return static_cast<std::uint32_t>(weapon);
+}
+
+std::uint32_t secondaryWeaponHash(int ped)
+{
+    // Same native, attach point 1. Unlike the primary hand, the return value is
+    // honoured: FALSE means "nothing there", whatever the out parameter holds.
+    Hash weapon = 0;
+    if (WEAPON::GET_CURRENT_PED_WEAPON(ped, weapon, TRUE, kAttachHandSecondary, FALSE) == 0)
+    {
+        return 0u;
+    }
+    return static_cast<std::uint32_t>(weapon);
+}
+
+bool weaponObjectInSecondaryHand(int ped)
+{
+    // WEAPON::GET_CURRENT_PED_WEAPON_ENTITY_INDEX 0x3B390A939AF0B5FC Entity (Ped, int attachPoint)
+    const Entity object = WEAPON::GET_CURRENT_PED_WEAPON_ENTITY_INDEX(ped, kAttachHandSecondary);
+    return object != 0 && ENTITY::DOES_ENTITY_EXIST(object) != 0;
 }
 
 bool isWeaponAGun(std::uint32_t weaponHash)
@@ -449,6 +475,38 @@ bool isWeaponAGun(std::uint32_t weaponHash)
         return false;
     }
     return WEAPON::IS_WEAPON_A_GUN(static_cast<Hash>(weaponHash)) != 0;
+}
+
+bool isSidearm(std::uint32_t weaponHash)
+{
+    // WEAPON::IS_WEAPON_REVOLVER 0xC212F1D05A8232BB BOOL (Hash)
+    // WEAPON::IS_WEAPON_PISTOL   0xDDC64F5E31EEDAB6 BOOL (Hash)
+    if (weaponHash == 0u)
+    {
+        return false;
+    }
+    const Hash weapon = static_cast<Hash>(weaponHash);
+    return WEAPON::IS_WEAPON_REVOLVER(weapon) != 0 || WEAPON::IS_WEAPON_PISTOL(weapon) != 0;
+}
+
+bool isHandheldFirearm(std::uint32_t weaponHash)
+{
+    // WEAPON::IS_WEAPON_REPEATER 0xDDB2578E95EF7138 BOOL (Hash)
+    // WEAPON::IS_WEAPON_RIFLE    0x0A82317B7EBFC420 BOOL (Hash)
+    // WEAPON::IS_WEAPON_SHOTGUN  0xC75386174ECE95D5 BOOL (Hash)
+    // WEAPON::_IS_WEAPON_SNIPER  0x6AD66548840472E5 BOOL (Hash)
+    // A hash none of the classes claims is not adopted: the safe direction.
+    if (!isWeaponAGun(weaponHash))
+    {
+        return false;
+    }
+    if (isSidearm(weaponHash))
+    {
+        return true;
+    }
+    const Hash weapon = static_cast<Hash>(weaponHash);
+    return WEAPON::IS_WEAPON_REPEATER(weapon) != 0 || WEAPON::IS_WEAPON_RIFLE(weapon) != 0 ||
+           WEAPON::IS_WEAPON_SHOTGUN(weapon) != 0 || WEAPON::_IS_WEAPON_SNIPER(weapon) != 0;
 }
 
 bool weaponLabel(std::uint32_t weaponHash, char* out, std::size_t capacity)
