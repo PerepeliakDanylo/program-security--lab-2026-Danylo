@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Назва | Документація проєкту RDR2 Dynamic Reload |
-| Версія | 0.2.0 |
+| Версія | 0.3.0 |
 | Статус | Draft |
 | Останнє оновлення | 2026-10-28 |
 | Власник | Данило Перепеляк |
@@ -37,6 +37,7 @@
 | [`security/threat_model.md`](security/threat_model.md) | Модель загроз за STRIDE по елементах [`architecture/dfd.md`](architecture/dfd.md), модель порушника, прийняті ризики | Перед зміною архітектури або механізму патчингу |
 | [`security/security_requirements.md`](security/security_requirements.md) | Безпекові вимоги `SR-xx`, що випливають із моделі загроз, із трасуванням на загрози | Разом із `specification/requirements.md` при прийманні релізу |
 | [`security/authentication.md`](security/authentication.md) | Автентифікація супроводжувача в `tools/drs_release`: зберігання облікових даних, блокування, сесія, загрози `TT-` | Перед зміною входу чи файла облікових записів |
+| [`security/access_control.md`](security/access_control.md) | Керування доступом у `tools/drs_release`: ролі RBAC, умови ABAC, правило DAC, step-up | Перед зміною прав чи додаванням операції в інструмент |
 | [`changelog.md`](changelog.md) | Журнал змін **проєкту**: рішення, правки документів, версії компонентів. Append-only, новіші записи зверху, українською | Після кожної значущої зміни |
 
 > Не плутати з `CHANGELOG.md` у корені репозиторію: той — журнал **релізів для гравця**,
