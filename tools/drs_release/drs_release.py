@@ -1,32 +1,32 @@
-"""drs_release — CLI інструмента супроводжувача релізів (версія ЛР7: цілісність і автентичність).
+"""drs_release — CLI інструмента супроводжувача релізів (версія ЛР8: паспорт релізу).
 
 Призначення цільового файлу в репозиторії: tools/drs_release/drs_release.py
-Ця версія ЗАМІНЮЄ версію ЛР6. Додано в ЛР7:
-  * build-manifest <тека> — SHA-256-маніфест усіх файлів релізу (integrity.py);
-  * sign <тека> — підпис маніфесту Ed25519 приватним ключем супроводжувача; підписується лише
-    маніфест, що збігається з теперішнім вмістом теки;
-  * verify <тека> — підпис (відкритим ключем із репозиторію) + звірка кожного файла;
-  * атрибути реліз-кандидата для ABAC-правила sign — з реального git (гілка, незакомічені
-    зміни), а не з файла, який можна відредагувати; помилка git = «брудний» стан → відмова;
-  * цілісність файла облікових записів (accounts.py): будь-яка невідповідність — повідомлення
-    й код виходу 2 (fail closed); `protect` — одноразово для сховища з ЛР4-ЛР6.
-Автентифікація (ЛР4), доступ (ЛР5) і другий фактор (ЛР6) — ті самі: getpass, офлайн, не в грі.
+Ця версія ЗАМІНЮЄ версію ЛР7. Додано в ЛР8:
+  * make-passport <тека> [версія] — зібрати й підписати паспорт релізу (RSA-PSS, passport.py):
+    продукт, версія, автор, домашня сторінка, тип ліцензії (Freeware / MIT) і SHA-256 маніфесту
+    ЛР7. Лише на актуальний маніфест; закритий ключ — зашифрований паролем PKCS#8 поза
+    репозиторієм (getpass); доступ — maintainer + чистий master;
+  * check-passport <тека> — перевірити весь ланцюг: підпис паспорта відкритим ключем із
+    репозиторію → хеш маніфесту дорівнює засвідченому → файли теки збігаються з маніфестом
+    (viewer+, лише читання).
+Автентифікація (ЛР4), доступ (ЛР5), другий фактор (ЛР6), цілісність (ЛР7) — ті самі.
 
-CLI (запускати з теки tools/drs_release — ключі й сховище лежать поруч):
-    python drs_release.py init                      # порожній файл облікових записів + ключ цілісності
-    python drs_release.py add-user <owner>          # БУТСТРАП: лише коли записів ще немає → owner
-    python drs_release.py login <user>              # вхід (пароль [+ код TOTP]) і сесія
-    python drs_release.py protect                   # один раз: захистити сховище, створене до ЛР7
+CLI (запускати з теки tools/drs_release):
+    python drs_release.py init | add-user <owner> | login <user> | protect
 
-У сесії (перевірка прав — у точці виконання кожної операції, не ховаємо меню):
-    help whoami status                               # будь-який автентифікований
-    list-users | verify <тека>                       # viewer+
-    enroll-totp [--force]                            # viewer+, лише свій запис, свіже підтвердження
-    build-manifest <тека>                            # contributor+
-    sign <тека>                                      # maintainer+, ABAC: git master без змін
-    add-user <user> <role> | set-role <user> <role...> | rotate-key   # owner
-    passwd [user]                                    # власник свого запису або owner
+У сесії:
+    help whoami status | list-users | verify <тека> | check-passport <тека>   # viewer+
+    enroll-totp [--force]                                                       # viewer+, свій запис
+    build-manifest <тека>                                                       # contributor+
+    sign <тека> | make-passport <тека> [версія]                                 # maintainer+, чистий master
+    add-user <user> <role> | set-role <user> <role...> | rotate-key             # owner
+    passwd [user]                                                               # власник або owner
     exit
+
+Закритий ключ паспорта лежить поза текою репозиторію: шлях зі змінної середовища DRS_PASSPORT_KEY
+або %USERPROFILE%\\.drs_release\\release_passport.key (passport.default_key_path). Якщо шлях ключа
+виявився всередині робочого дерева git, make-passport відмовляє (SR-34). Паспорт видається лише на
+маніфест, що збігається з теперішнім вмістом теки (як і підпис маніфесту в ЛР7).
 """
 
 from __future__ import annotations
@@ -35,13 +35,15 @@ import argparse
 import base64
 import getpass
 import os
+import re
 import subprocess
 import sys
 import time
 
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
 
 import integrity
+import passport
 from accounts import AccountStore, IntegrityError
 from authz import ROLES, authorize
 from crypto import (new_totp_secret, open_totp_secret, provisioning_uri, rewrap_for_new_master,
@@ -53,12 +55,11 @@ DEFAULT_AUDIT = "drs_release.audit.log"
 IDLE_TIMEOUT_S = 10 * 60
 ABSOLUTE_TIMEOUT_S = 60 * 60
 GIT_TIMEOUT_S = 15
+PRODUCT_VERSION = "1.2.1"            # типова версія паспорта, якщо не вказано аргументом
 
 GENERIC_LOGIN_ERROR = "Автентифікацію відхилено."
 DENY = "Операцію відхилено."
 
-# Пошкоджений або підмінений конверт секрету: мітка GCM не зійшлася (InvalidTag) або
-# відредаговано саму структуру JSON (нема поля, не base64, не той тип).
 ENVELOPE_ERRORS = (InvalidTag, KeyError, TypeError, ValueError)
 
 
@@ -69,7 +70,7 @@ class Session:
         self.master = master              # відкриває лише ВЛАСНИЙ секрет TOTP; на диск не пишеться
         self.started = time.time()
         self.last_activity = self.started
-        self.last_stepup = self.started   # вхід рахується свіжим підтвердженням
+        self.last_stepup = self.started
 
     def timed_out(self, now: float) -> str | None:
         if now - self.last_activity > IDLE_TIMEOUT_S:
@@ -81,9 +82,6 @@ class Session:
 
 # --- спільні помічники авторизації ------------------------------------------
 def require_step_up(session: Session, store: AccountStore) -> bool:
-    """Повторне підтвердження пароля для критичної операції. Перевіряється лише пароль
-    (second_factor_pending=True: лічильник невдач не скидається, бо це не новий вхід);
-    невдале підтвердження рахується як невдала спроба — те саме блокування."""
     print("Критична операція потребує повторного підтвердження пароля.")
     pw = getpass.getpass("Пароль: ")
     if store.authenticate(session.username, pw, second_factor_pending=True).ok:
@@ -96,8 +94,6 @@ def require_step_up(session: Session, store: AccountStore) -> bool:
 
 def guard(session: Session, store: AccountStore, operation: str,
           resource: dict | None = None, target_user: str | None = None) -> bool:
-    """Перевірка прав у точці виконання. True → дозволено. Користувачеві — лише
-    загальне повідомлення; причина відмови — у журнал."""
     age = time.time() - session.last_stepup
     dec = authorize(session.roles, operation, target_user=target_user,
                     current_user=session.username, resource=resource, session_stepup_age=age)
@@ -118,17 +114,14 @@ def guard(session: Session, store: AccountStore, operation: str,
 
 
 def _git(*args: str) -> str:
-    """Один виклик git із фіксованими аргументами (без оболонки); помилка — виняток."""
     done = subprocess.run(["git", *args], capture_output=True, text=True,
                           timeout=GIT_TIMEOUT_S, check=True)
     return done.stdout.strip()
 
 
 def read_release_state() -> dict:
-    """Атрибути реліз-кандидата для ABAC-правила sign — з реального git (з ЛР7): поточна
-    гілка й наявність незакомічених змін (`git status --porcelain`, ігноровані файли не
-    враховуються). Git недоступний або це не репозиторій — небезпечний стан (dirty) →
-    sign буде відхилено (fail closed)."""
+    """Атрибути реліз-кандидата для ABAC-правил sign / make-passport — з реального git. Помилка
+    git або не репозиторій → небезпечний стан (dirty) → відмова (fail closed)."""
     try:
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
         dirty = bool(_git("status", "--porcelain"))
@@ -138,10 +131,6 @@ def read_release_state() -> dict:
 
 
 def check_second_factor(store: AccountStore, username: str, master: bytes) -> bool:
-    """Другий фактор входу (пароль уже перевірено). Секрет відкривається майстер-секретом
-    ЦЬОГО входу. Підмінений конверт, невірний або вже використаний код — невдала спроба
-    входу (record_failure: те саме блокування, що й за пароль). Успіх запам'ятовує номер
-    кроку коду (одноразовість) і завершує вхід (скидає лічильник невдач)."""
     try:
         secret = open_totp_secret(master, store.get_totp(username), username)
     except ENVELOPE_ERRORS:
@@ -156,19 +145,28 @@ def check_second_factor(store: AccountStore, username: str, master: bytes) -> bo
         store.record_failure(username, "totp-replay")
         return False
     store.set_totp_counter(username, counter)
-    store.complete_login(username)          # зберігає файл і пише login-ok
+    store.complete_login(username)
     return True
 
 
 def _dir_arg(args: list[str]) -> str:
-    """Шлях до теки — решта рядка після команди (шляхи з пробілами; лапки прибираються)."""
     return " ".join(args).strip().strip('"')
+
+
+# Версія релізу в make-passport: MAJOR.MINOR.PATCH з необов'язковим суфіксом (1.2.1, 1.3.0-rc1).
+_VERSION_RE = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?")
+
+
+def _passport_key_path() -> str:
+    """Закритий ключ паспорта — поза репозиторієм: DRS_PASSPORT_KEY або тека .drs_release профілю."""
+    return passport.default_key_path()
 
 
 # --- команди сесії ----------------------------------------------------------
 def cmd_help(session, store, args):
-    print("help whoami status | list-users | verify <тека> | enroll-totp [--force] | build-manifest <тека> |")
-    print("sign <тека> | add-user <user> <role> | set-role <user> <role...> | passwd [user] | rotate-key | exit")
+    print("help whoami status | list-users | verify <тека> | check-passport <тека> | enroll-totp [--force] |")
+    print("build-manifest <тека> | sign <тека> | make-passport <тека> [версія] |")
+    print("add-user <user> <role> | set-role <user> <role...> | passwd [user] | rotate-key | exit")
     return True
 
 
@@ -227,7 +225,7 @@ def cmd_set_role(session, store, args):
     except KeyError:
         print("Немає такого користувача.")
         return True
-    except ValueError as exc:          # останній owner (інваріант сховища)
+    except ValueError as exc:
         print(str(exc))
         return True
     store.save()
@@ -236,10 +234,6 @@ def cmd_set_role(session, store, args):
 
 
 def cmd_passwd(session, store, args):
-    """Свій пароль: секрет TOTP переобгортається під ключ із нового пароля (той самий
-    автентифікатор працює далі). Чужий пароль (лише owner): секрет відкриває тільки
-    майстер-секрет власника запису, якого owner не має, — TOTP запису скидається, і
-    користувач після входу підключає його знову."""
     target = args[0] if args else session.username
     if not guard(session, store, "passwd", target_user=target):
         return True
@@ -249,7 +243,7 @@ def cmd_passwd(session, store, args):
     own = target == session.username
     blob = store.get_totp(target)
     if own and blob is not None:
-        try:   # конверт має відкриватися ДО будь-яких змін: підмінений — нічого не міняємо
+        try:
             open_totp_secret(session.master, blob, target)
         except ENVELOPE_ERRORS:
             store.audit("passwd-deny:totp-envelope", target)
@@ -274,9 +268,6 @@ def cmd_passwd(session, store, args):
 
 
 def cmd_enroll_totp(session, store, args):
-    """Підключення ВЛАСНОГО другого фактора (самообслуговування). Критична операція —
-    свіже підтвердження паролем. Секрет одразу запечатується в конверт і відкритим на
-    диск не потрапляє; без правильного коду із застосунку підключення не відбувається."""
     force = bool(args) and args[0] == "--force"
     if store.has_totp(session.username) and not force:
         print("TOTP уже підключено. enroll-totp --force — підключити новий (старий перестане діяти).")
@@ -292,15 +283,13 @@ def cmd_enroll_totp(session, store, args):
         print("Код не підійшов — TOTP НЕ підключено. Перевірте ключ і час на пристрої, повторіть enroll-totp.")
         return True
     store.set_totp(session.username, seal_totp_secret(session.master, secret, session.username))
-    store.set_totp_counter(session.username, counter)    # код підтвердження вже використано
+    store.set_totp_counter(session.username, counter)
     store.save()
     print("TOTP підключено. Наступний вхід попросить код.")
     return True
 
 
 def cmd_rotate_key(session, store, args):
-    """Ротація ключів конверта власного секрету: новий DEK і нова сіль KEK. Секрет, пароль
-    і лічильник одноразовості не змінюються."""
     if not guard(session, store, "rotate-key"):
         return True
     blob = store.get_totp(session.username)
@@ -336,8 +325,6 @@ def cmd_build_manifest(session, store, args):
 
 
 def cmd_sign(session, store, args):
-    """Підпис маніфесту. Доступ — maintainer+ і ABAC «git master без змін» (ЛР5, стан — з git);
-    підписується лише маніфест, що збігається з теперішнім вмістом теки."""
     state = read_release_state()
     if not guard(session, store, "sign", resource=state):
         return True
@@ -367,9 +354,114 @@ def cmd_sign(session, store, args):
     return True
 
 
+def cmd_make_passport(session, store, args):
+    """Зібрати й підписати паспорт релізу (RSA-PSS). Доступ — maintainer+ і чистий master; паспорт
+    видається лише на маніфест, що збігається з текою; закритий ключ — поза репозиторієм (SR-34),
+    розшифровується паролем лише на час операції."""
+    state = read_release_state()
+    if not guard(session, store, "make-passport", resource=state):
+        return True
+    tokens = list(args)
+    version = PRODUCT_VERSION
+    if len(tokens) > 1 and _VERSION_RE.fullmatch(tokens[-1]):
+        version = tokens.pop()                 # останнє слово — версія; решта — шлях (можна з пробілами)
+    root = _dir_arg(tokens)
+    if not root or not os.path.isdir(root):
+        print("Використання: make-passport <тека релізу> [версія]   (спершу build-manifest і sign)")
+        return True
+    mpath = os.path.join(root, passport.MANIFEST_NAME)
+    if not os.path.exists(mpath):
+        print("Немає маніфесту релізу — спершу build-manifest.")
+        return True
+    with open(mpath, "rb") as fh:
+        problems = integrity.diff_manifest(root, fh.read().decode("utf-8", errors="replace"))
+    if problems:
+        store.audit("make-passport-deny:stale-manifest", session.username)
+        print("Маніфест не відповідає теці (" + "; ".join(problems[:3]) + ") — спершу build-manifest і sign.")
+        return True
+    key_path = _passport_key_path()
+    if passport.key_inside_repo(key_path):
+        store.audit("make-passport-deny:key-in-repo", session.username)
+        print(f"Закритий ключ паспорта {key_path} лежить у теці репозиторію — перенесіть його поза неї "
+              "й задайте DRS_PASSPORT_KEY (SR-34).")
+        return True
+    if not os.path.exists(key_path):
+        print(f"Немає закритого ключа паспорта {key_path} — створіть: python passport.py genkey "
+              "(інший шлях — змінна DRS_PASSPORT_KEY).")
+        return True
+    try:
+        priv = passport.load_private(key_path, getpass.getpass("Пароль закритого ключа паспорта: ").encode("utf-8"))
+    except (ValueError, TypeError):
+        store.audit("make-passport-fail:key", session.username)
+        print("Не вдалося відкрити закритий ключ (невірний пароль або пошкоджений файл).")
+        return True
+    doc = passport.build_passport(root, version, time.strftime("%Y-%m-%d"))
+    signature = passport.sign_passport(priv, doc)
+    import json as _json
+    with open(os.path.join(root, passport.PASSPORT_NAME), "w", encoding="utf-8", newline="\n") as fh:
+        _json.dump(doc, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+    with open(os.path.join(root, passport.PASSPORT_SIG), "w", encoding="ascii", newline="\n") as fh:
+        fh.write(base64.b64encode(signature).decode("ascii") + "\n")
+    store.audit("make-passport:ok", session.username)
+    print(f"Паспорт релізу створено й підписано (RSA-PSS): {passport.PASSPORT_NAME} (+ .sig). "
+          f"Версія {version}, ліцензія {passport.LICENSE_TYPE}.")
+    return True
+
+
+def cmd_check_passport(session, store, args):
+    """Перевірити реліз через паспорт — увесь ланцюг: підпис паспорта RSA-PSS відкритим ключем із
+    репозиторію → SHA-256 маніфесту дорівнює засвідченому → файли теки збігаються з маніфестом.
+    Відсутній паспорт, підпис, ключ чи маніфест — «не підтверджено» (fail closed)."""
+    if not guard(session, store, "check-passport"):
+        return True
+    root = _dir_arg(args)
+    if not root or not os.path.isdir(root):
+        print("Використання: check-passport <тека релізу>")
+        return True
+    ppath = os.path.join(root, passport.PASSPORT_NAME)
+    spath = os.path.join(root, passport.PASSPORT_SIG)
+    problems: list[str] = []
+    doc = None
+    if not (os.path.exists(ppath) and os.path.exists(spath) and os.path.exists(passport.PUB_KEY_FILE)):
+        problems.append(f"бракує {passport.PASSPORT_NAME}, {passport.PASSPORT_SIG} або {passport.PUB_KEY_FILE}")
+    else:
+        import json as _json
+        try:
+            with open(ppath, "r", encoding="utf-8") as fh:
+                doc = _json.load(fh)
+            with open(spath, "r", encoding="ascii") as fh:
+                signature = base64.b64decode(fh.read().strip())
+            pub = passport.load_public(passport.PUB_KEY_FILE)
+            if not passport.verify_passport(pub, doc, signature):
+                problems.append("підпис паспорта недійсний (чужий ключ або змінений паспорт)")
+        except (OSError, ValueError, UnsupportedAlgorithm):
+            problems.append("паспорт, підпис або відкритий ключ пошкоджено")
+            doc = None
+        if doc is not None and not problems:
+            mpath = os.path.join(root, passport.MANIFEST_NAME)
+            if not os.path.exists(mpath):
+                problems.append(f"у теці немає {passport.MANIFEST_NAME}, на який посилається паспорт")
+            elif passport.sha256_file(mpath) != doc.get("manifest_sha256"):
+                problems.append("хеш маніфесту не збігається з паспортом (маніфест перебудовано чи підмінено "
+                                "після видачі паспорта)")
+            else:
+                # Ланцюг до кінця: файли теки — саме ті, що в засвідченому паспортом маніфесті.
+                with open(mpath, "rb") as fh:
+                    problems.extend(integrity.diff_manifest(root, fh.read().decode("utf-8", errors="replace")))
+    if not problems:
+        print(f"Паспорт дійсний: {doc['product_id']} {doc['product_version']}, ліцензія {doc['license_type']}, "
+              f"автор {doc['author']}, видано {doc['issued']}. Маніфест і файли теки збігаються.")
+        print("  Підпис самого маніфесту (Ed25519, ЛР7) перевіряє: verify " + root)
+    else:
+        print("ПАСПОРТ НЕ ПІДТВЕРДЖЕНО:")
+        for p in problems:
+            print("  —", p)
+    store.audit(f"check-passport:{'ok' if not problems else 'fail'}", session.username)
+    return True
+
+
 def cmd_verify(session, store, args):
-    """Перевірка релізу: підпис маніфесту відкритим ключем із репозиторію + звірка файлів.
-    Відсутній маніфест, підпис чи ключ — теж «не пройдено» (fail closed)."""
     if not guard(session, store, "verify"):
         return True
     root = _dir_arg(args)
@@ -413,6 +505,7 @@ COMMANDS = {
     "help": cmd_help, "whoami": cmd_whoami, "status": cmd_status,
     "list-users": cmd_list_users, "add-user": cmd_add_user, "set-role": cmd_set_role,
     "passwd": cmd_passwd, "sign": cmd_sign, "build-manifest": cmd_build_manifest,
+    "make-passport": cmd_make_passport, "check-passport": cmd_check_passport,
     "rotate-key": cmd_rotate_key, "verify": cmd_verify, "enroll-totp": cmd_enroll_totp,
     "exit": cmd_exit, "quit": cmd_exit,
 }
@@ -451,8 +544,6 @@ def do_init(args) -> int:
         print("Файл облікових записів уже існує — init скасовано.")
         return 1
     if os.path.exists(store.key_path):
-        # Ключ без файла — аномалія (можливе видалення); новий порожній файл зі старим
-        # ключем відкрив би бутстрап нового власника. Видалити ключ — лише свідомо.
         print(f"Є ключ цілісності {store.key_path}, але немає файла облікових записів — init скасовано. "
               "Відновіть файл або свідомо видаліть ключ.")
         return 1
@@ -463,9 +554,6 @@ def do_init(args) -> int:
 
 
 def do_add_user(args) -> int:
-    """Бутстрап ПЕРШОГО власника: дозволено лише коли записів ще немає. Коли вони вже
-    є, додавання — лише через сесію owner (команда add-user), щоб не було обхідного
-    шляху повз перевірку прав."""
     store = AccountStore(args.store, args.audit).load()
     if not os.path.exists(args.store):
         print("Спершу init.")
@@ -497,7 +585,6 @@ def do_login(args) -> int:
     two_factor = store.has_totp(args.username)
     result = store.authenticate(args.username, password, second_factor_pending=two_factor)
     if not result.ok or (two_factor and not check_second_factor(store, args.username, result.master)):
-        # Єдине загальне повідомлення; причина (locked/no-such-user/totp…) — лише в журналі (SR-22).
         print(GENERIC_LOGIN_ERROR)
         return 1
     run_session(Session(args.username, result.roles, result.master or b""), store)
@@ -505,8 +592,6 @@ def do_login(args) -> int:
 
 
 def do_protect(args) -> int:
-    """Одноразово ввімкнути захист цілісності для сховища з ЛР4-ЛР6 (ні ключа, ні мітки).
-    Захищається ПОТОЧНИЙ вміст файла — після входу варто переглянути list-users."""
     store = AccountStore(args.store, args.audit)
     if not store.load_unverified():
         print("protect не потрібен: файла немає або захист цілісності вже ввімкнено.")
@@ -538,7 +623,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return handlers[args.command](args)
     except IntegrityError as exc:
-        # Fail closed: жодна команда не працює з файлом, що не пройшов перевірку.
         print(str(exc))
         return 2
 

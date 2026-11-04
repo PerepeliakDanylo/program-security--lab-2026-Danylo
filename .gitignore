@@ -66,4 +66,8 @@ tools/drs_release/drs_release.signing.key
 labs/lab8/*.pem
 labs/lab8/*.sig
 
+# tools/drs_release — приватний ключ паспорта (ЛР8): живе поза репозиторієм, рядок — страховка
+tools/drs_release/release_passport.key
+
+
 

@@ -1,6 +1,11 @@
-"""drs_release / integrity.py — цілісність і автентичність релізу (ЛР7).
+"""drs_release / integrity.py — цілісність і автентичність релізу (ЛР7; уточнено в ЛР8).
 
 Призначення цільового файлу в репозиторії: tools/drs_release/integrity.py
+Ця версія ЗАМІНЮЄ версію ЛР7. Зміна ЛР8 — одна: файли паспорта релізу (`RELEASE_PASSPORT.json`
+і `RELEASE_PASSPORT.json.sig`) у маніфест не входять, як і сам маніфест із його підписом. Паспорт
+посилається на SHA-256 маніфесту, тож якби маніфест охоплював паспорт, виникла б кругова
+залежність: після make-passport команда verify бачила б паспорт «зайвим», а новий маніфест
+змінював би хеш, на який посилається паспорт.
 
 Два механізми для артефактів релізу мода:
   * SHA-256-**маніфест** — список «хеш  шлях» усіх файлів релізу (цілісність вмісту);
@@ -34,7 +39,10 @@ MANIFEST_NAME = "MANIFEST.sha256"
 SIG_NAME = "MANIFEST.sha256.sig"
 PRIV_KEY_FILE = "drs_release.signing.key"   # приватний — gitignore
 PUB_KEY_FILE = "release_signing.pub"        # публічний — у репозиторії
-_EXCLUDE = {MANIFEST_NAME, SIG_NAME}
+# Файли, що підписують маніфест або посилаються на нього, у маніфест не входять (ЛР8):
+# маніфест і його підпис (ЛР7), паспорт релізу і його підпис (passport.py, ЛР8).
+PASSPORT_FILES = ("RELEASE_PASSPORT.json", "RELEASE_PASSPORT.json.sig")
+_EXCLUDE = {MANIFEST_NAME, SIG_NAME, *PASSPORT_FILES}
 
 
 def _b64e(raw: bytes) -> str:
@@ -55,8 +63,8 @@ def sha256_file(path: str) -> str:
 
 
 def build_manifest(root: str) -> str:
-    """Рядок «хеш  відносний/шлях\\n», відсортований за шляхом. Самі маніфест і підпис
-    виключені."""
+    """Рядок «хеш  відносний/шлях\\n», відсортований за шляхом. Маніфест, його підпис і файли
+    паспорта виключені."""
     entries: list[tuple[str, str]] = []
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
@@ -151,6 +159,12 @@ def _selftest() -> int:
         assert verify(pub, manifest.encode("utf-8"), sig), "підпис маніфесту має перевірятися"
         assert diff_manifest(root, manifest) == [], "незмінена тека має збігатися з маніфестом"
 
+        # ЛР8: паспорт релізу, покладений у теку після маніфесту, розбіжністю не є.
+        for name in PASSPORT_FILES:
+            with open(os.path.join(root, name), "w") as fh:
+                fh.write("passport stand-in\n")
+        assert diff_manifest(root, manifest) == [], "файли паспорта не мають входити в маніфест"
+
         with open(os.path.join(root, "a.txt"), "a") as fh:
             fh.write("tampered\n")
         assert diff_manifest(root, manifest) == ["змінено: a.txt"], "зміну файлу має бути виявлено"
@@ -158,7 +172,8 @@ def _selftest() -> int:
 
         wrong_pub = generate_keypair()[1]
         assert not verify(wrong_pub, manifest.encode("utf-8"), sig), "чужий ключ не має перевіряти"
-    print("integrity.py self-test OK: маніфест, виявлення зміни, Ed25519-підпис і чужий ключ.")
+    print("integrity.py self-test OK: маніфест, виявлення зміни, Ed25519-підпис, чужий ключ, "
+          "паспорт поза маніфестом.")
     return 0
 
 
