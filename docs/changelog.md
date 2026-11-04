@@ -3,13 +3,17 @@
 | | |
 | --- | --- |
 | Назва | Журнал змін — RDR2 Dynamic Reload |
-| Версія | 0.8.0 |
+| Версія | 0.9.0 |
 | Статус | Draft |
-| Останнє оновлення | 2026-10-28 |
+| Останнє оновлення | 2026-11-04 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | [`README.md`](README.md), [`policy/project_policy.md`](policy/project_policy.md), [`internal_spec/contexts_registry.md`](internal_spec/contexts_registry.md) |
 
 Журнал append-only: новіші записи додаються зверху, наявні записи не редагуються й не видаляються. Формат заголовка — `## [YYYY-MM-DD] [ПРЕФІКС] Назва`. Допустимі префікси: `[INIT]`, `[DOCS]`, `[SEC]`, `[FEAT]`, `[FIX]`, `[POLICY]`, `[RELEASE]`.
+
+## [2026-11-04] [FEAT] ЛР8: модель розповсюдження (Freeware/MIT) і підписаний паспорт релізу
+
+Обрано модель Freeware/MIT (безоплатний відкритий мод; технічних обмежень запуску немає — лише автентичність). Додано паспорт релізу `RELEASE_PASSPORT.json`: продукт, версія, автор, тип ліцензії та SHA-256 маніфесту ЛР7, підпис RSA-PSS/SHA-256 (RSA-3072), перевірка відкритим ключем `release_passport.pub` із репозиторію; `make-passport` (maintainer, чистий master, лише на актуальний маніфест) і `check-passport` (viewer; ланцюг паспорт → маніфест → файли). Закритий ключ — зашифрований паролем PKCS#8 поза репозиторієм (`%USERPROFILE%\.drs_release\` або `DRS_PASSPORT_KEY`). Файли паспорта не входять у маніфест (`integrity.py`). Вимоги FR-83 – FR-85, SR-34 – SR-36, загрози TT-13 – TT-14; рішення — `security/distribution.md`. Вправа RSA-PSS (OpenSSL, перехресна перевірка в обидва боки) — у `labs/lab8/`.
 
 ## [2026-10-28] [FEAT] ЛР7: цілісність і автентичність у `tools/drs_release`
 
