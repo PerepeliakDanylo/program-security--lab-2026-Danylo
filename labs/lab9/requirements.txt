@@ -1,0 +1,5 @@
+# control_check.py і control_check_obf.py — лише стандартна бібліотека (hashlib, hmac), без залежностей.
+# cryptography потрібен лише щоб ЗАПУСТИТИ Додаток А №2 (приклад методички з AES-GCM):
+#   python -m venv .venv && .venv\Scripts\activate
+#   pip install -r requirements.txt
+cryptography>=42.0
