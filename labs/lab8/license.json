@@ -1,0 +1,9 @@
+{
+  "product_id": "DynamicReloadSpeed",
+  "product_version": "1.2.1",
+  "licensee": "Nexus community (public release)",
+  "license_type": "Freeware / MIT",
+  "valid_until": "2027-12-31",
+  "features": ["dynamic-reload", "overlay", "presets"],
+  "license_id": "DRS-2026-0001-14"
+}

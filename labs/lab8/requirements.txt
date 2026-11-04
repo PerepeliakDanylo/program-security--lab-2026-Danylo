@@ -1,0 +1,5 @@
+# Залежність вправи ЛР8 (перехресна перевірка RSA-PSS у коді):
+#   python -m venv .venv && .venv\Scripts\activate   (Windows)
+#   pip install -r requirements.txt
+# Сам підпис у вправі робиться командами OpenSSL (openssl_license.md); скрипт — для звірки.
+cryptography>=42.0

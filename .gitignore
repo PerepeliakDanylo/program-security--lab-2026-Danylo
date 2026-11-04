@@ -62,3 +62,8 @@ tools/drs_release/release.state.json
 tools/drs_release/drs_release.accounts.json.key
 tools/drs_release/drs_release.signing.key
 
+# labs/lab8 — ключі й підписи вправи, не комітити
+labs/lab8/*.pem
+labs/lab8/*.sig
+
+
