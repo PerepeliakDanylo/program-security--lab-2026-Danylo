@@ -9,7 +9,59 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Project documentation is kept in Ukrainian; this file, the shipped `README.txt`, the presets and
 the plugin's log are in English.
 
-## [1.2.1] - unreleased
+## [1.2.2] - unreleased
+
+Start-up detection fix for heavily modded games, found from a player's log on 1.2.1 (NexusMods
+user Markie98, game build 1.0.1491.50, several large weapon mods). On that setup 1.2.1 either
+switched itself off ("could not identify the AnimReloadRate field") or - worse - reported that it
+switched reload rates while the game's own reloads never changed. A test build with these fixes
+ran on that setup on 2026-11-16 ("everything is working fine now"); the one-block INI table below
+was added after that test. No INI key was added or renamed; an INI from 1.2.1 works unchanged.
+
+### Fixed
+
+- **The plugin no longer mistakes its own settings for the game's weapon data.** The start-up scan
+  reads the process heap, which the plugin shares with the game, and the plugin's own INI table
+  keeps each weapon's name hash right next to its `Calm_AnimReloadRate` (`hash + 0x04`). When the
+  weapon structure could not be recognised, the 1.2.1 fallback accepted that table as weapon data
+  (offset `+0x0004`: 23 names matched, 36 contradicted it) and from then on switched values in its
+  own memory - the log said `reload rate now …`, the game did not change. Addresses inside the
+  plugin's own tables are now skipped by the name scan, the class scan and the snapshot
+  (`Config::weaponBufferRange()`, `WeaponPatcher::isOwnHeapAddress()`), and the INI table is
+  allocated once per session, so no freed copy of it is left in memory for the scan to find.
+- **A clean match of the reload field is no longer outvoted by a similar field.** In the same log
+  the real field matched all 52 reference weapons with no contradiction and was still rejected,
+  because a neighbouring field matched 45 and the fallback ignored contradictions under the 1.5x
+  margin rule. Both search modes now score `exact - contradicted` and reject any offset that more
+  weapons contradict than confirm; a winner with no contradictions needs a 10 % lead over a
+  runner-up that has some.
+- **Large weapon mods can no longer push the weapon structure out of recognition.** The resolver
+  checks up to 64 structure types instead of 12; types 13-64 are logged at `debug` unless one of
+  them is the match. In the reported log the game's weapon structure was not among the first 12,
+  so the plugin fell back to the value-only search in the first place.
+- **`[Vanilla]` lines in the INI are used.** They were read and then ignored: discovery and the
+  stock-or-slowed decision of `Mode = auto` used only the built-in table. A `[Vanilla]` line
+  (`WEAPON_… = value`) now overrides the built-in value for that exact weapon name, and a gun the
+  plugin has no list entry for (for example one added by a weapon mod) takes part in discovery
+  when its stock value is given there.
+
+### Changed
+
+- `README.txt` and the INI comment on `ForceAnimReloadRateOffset`: pin only the offset your own log
+  printed as the accepted best offset, never the runner-up - a wrong pin switches a different
+  field. New troubleshooting entries for `resolver failed`, a pinned offset and more than four
+  copies of one weapon's data.
+- `README.txt`: the start-up scan can take longer than a few seconds in a game with large weapon
+  mods (about 10-17 s in the reported logs); reloads keep the loaded speed until it finishes.
+- `README.txt`: the only supported download source is the mod page on NexusMods, worded as on the
+  page itself; the licence section no longer points outside the archive.
+- The INI comment on `[Vanilla]` says what a line there does since this version, and why a
+  variant of a listed weapon must not get a line of its own (it would stop using its base
+  weapon's section).
+
+## [1.2.1] - 2026-11-16
+
+First public release: published on NexusMods on 2026-11-16 (archive `DynamicReloadSpeed-1.2.1.zip`).
 
 Polish after the 1.2.0 test (two in-game logs on 2026-10-27, build 1.0.1491.50: the first on an
 overhauled, slowed `weapons.ymt`, the second on a `weapons.ymt` with stock reload values). 1.2.0

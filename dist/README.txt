@@ -1,5 +1,5 @@
 ================================================================================
- RDR2 DYNAMIC RELOAD  1.2
+ RDR2 DYNAMIC RELOAD  1.2.2
  DynamicReloadSpeed.asi
 ================================================================================
 
@@ -119,10 +119,15 @@ HOW TO CONFIRM IT LOADED
     - one "plan:" line per weapon: the value the game loaded and the CALM /
       COMBAT values that weapon will get
 
+  The start-up scan begins a few seconds after the world appears and runs in
+  the background. It usually takes a few seconds; in a game with large weapon
+  mods it can take 10-20 seconds ("background scan finished in ... ms" in the
+  log). Until it finishes, reloads keep the speed the game loaded.
+
   With OnScreenState = 1 in [Debug] the state is also shown on screen: INIT and
-  SCANNING while the mod starts (a few seconds after loading), then CALM,
-  COMBAT or COOLDOWN with the time left, and on a second line the gun in your
-  hands with the reload rate the mod has put there - or "not managed".
+  SCANNING while the mod starts, then CALM, COMBAT or COOLDOWN with the time
+  left, and on a second line the gun in your hands with the reload rate the
+  mod has put there - or "not managed".
 
   Two revolvers or pistols drawn at once: two identical guns are one line
   ending in "x2" (they share one set of weapon data, so one reload rate); two
@@ -291,15 +296,21 @@ TROUBLESHOOTING
       Your .ini is too large to be a real configuration, so it was ignored
       and built-in defaults were used. Replace it with a shipped preset.
 
-  The log shows the plugin starting, but no "plan:" lines
+  "resolver failed: ..." / "the mod will do nothing this session"
+  (the log shows the plugin starting, but no "plan:" lines)
       The mod could not confirm where the reload fields are and switched
-      itself off on purpose. The game is untouched. Report the log - the
-      resolver lines in it are exactly what is needed to diagnose it.
+      itself off on purpose. The game is untouched. Report the WHOLE log -
+      the resolver lines in it are exactly what is needed to diagnose it.
 
   "no weapon-info class could be confirmed"
       The mod could not recognise the weapon structure itself and fell back
       to matching exact values only. Weapons whose values it cannot confirm
       are left alone this session. Report the log.
+
+  "... weapon-info objects carry this name; patching the first 4"
+      Your game holds more than four copies of that weapon's data, usually
+      because of weapon mods. The first four are switched. If that gun's
+      reload speed never changes, report the log.
 
   "hash not found in memory"
       That one weapon name does not exist in the game's data at all, so
@@ -326,6 +337,13 @@ TROUBLESHOOTING
       A forced offset in [Memory] is outside the allowed range and was
       refused. Nothing was written. Remove the forced offset - it is not
       meant to be set by hand unless the log printed that value for you.
+
+  "AnimReloadRate offset pinned to 0x... by [Memory]"
+      You set ForceAnimReloadRateOffset. Only ever pin the offset your own
+      log printed as the accepted best one ("... best offset=0x.... ... ->
+      accepted"), never the runner-up: a wrong value makes the mod switch a
+      different field of the weapon data. Remove the line (or set it to 0)
+      after you update the mod.
 
   "conditions: good only (stride unresolved)"
       Only with PatchSectionedReload = 1: the mod could only patch the
@@ -359,17 +377,15 @@ TROUBLESHOOTING
 
 WHERE TO GET THIS MOD
 
-  There are exactly two canonical sources:
+  Canonical download source: the Dynamic Reload Speed mod page on NexusMods
+  (author RedziYT). Files obtained from any other source are not supported.
 
-    - the mod page on NexusMods (author RedziYT)
-    - the Releases section of the GitHub repository
-      PerepeliakDanylo/program-security--lab-2026-Danylo
-
-  A file obtained from any other source is not supported by this project.
   Each release lists the SHA-256 of the archive and of DynamicReloadSpeed.asi
-  so you can check what you downloaded.
+  on that page, so you can check what you downloaded.
 
 
 LICENCE
 
-  MIT. See LICENSE in the repository.
+  MIT licence: free to use, change and share. The software is provided
+  "as is", without warranty of any kind; the author is not liable for any
+  claim or damage arising from its use.

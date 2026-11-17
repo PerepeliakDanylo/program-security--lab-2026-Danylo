@@ -32,20 +32,16 @@
 
 ## Звідки завантажувати
 
-Наведений нижче блок подано **англійською навмисно**: це дослівна цитата з `dist/README.txt`
-і зі сторінки мода, а не недогляд перекладу — див. виноску під ним.
+Гравцям — лише зі сторінки мода на NexusMods. Речення нижче подано **англійською навмисно**: це
+дослівна цитата з `dist/README.txt` і з першого екрана сторінки мода — див. виноску під ним.
 
-There are exactly two canonical sources:
+Canonical download source: the Dynamic Reload Speed mod page on NexusMods (author RedziYT).
+Files obtained from any other source are not supported.
 
-- the mod page on NexusMods (author RedziYT)
-- the Releases section of the GitHub repository
-  PerepeliakDanylo/program-security--lab-2026-Danylo
-
-A file obtained from any other source is not supported by this project.
-
-*(Формулювання навмисно дослівно збігається з `dist/README.txt` і першим екраном сторінки мода —
-вимога SR-02: перелік джерел має бути однаковим у всіх трьох місцях, інакше його можна
-непомітно підмінити в одному з них.)*
+*(Речення навмисно дослівно збігається з `dist/README.txt` і першим екраном сторінки мода —
+вимога SR-02. Цей репозиторій — вихідний код і запис кожного релізу: тег `v<версія>`, хеш коміту
+та SHA-256 архіву й `.asi` у [`docs/changelog.md`](docs/changelog.md) (SR-01, SR-03); окремим
+каналом завантаження для гравця він не є.)*
 
 ## Збірка
 
