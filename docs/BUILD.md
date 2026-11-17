@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Назва | Інструкція зі збірки плагіна |
-| Версія | 0.5.1 |
+| Версія | 0.5.2 |
 | Статус | Чинна — блокер заголовків SDK знято 2026-09-28; дефект `NOMINMAX` у CMake усунено 2026-09-29; 1.2.0 зібрано без жодної помилки й попередження в `src\` (2026-10-27, MSVC 2022, `/W4`); тестову 1.2.2 — так само (2026-11-16, обидва способи); §6 — під лог 1.2.2; §2.4 заповнюється кроком релізу 1.2.2 |
 | Останнє оновлення | 2026-11-17 |
 | Власник | Данило Перепеляк |
@@ -172,9 +172,11 @@ Get-FileHash -Algorithm SHA256 ".\inc\natives.h"
 
 | Джерело | Версія | Офіційна адреса | SHA-256 |
 |---|---|---|---|
-| ScriptHookRDR2 V2 | 2.0 (`.lib`) | `https://www.nexusmods.com/reddeadredemption2/mods/1472` | *заповнити перед релізом* |
-| ScriptHookRDR2 SDK (Alexander Blade) | 1.0.1207.73 (`main.h`, `types.h`) | `http://dev-c.com` | *заповнити перед релізом* |
-| `natives.h` | згенеровано 2026-09-27 18:44 GMT | `https://alloc8or.re/rdr3/nativedb/` | *заповнити перед релізом* |
+| ScriptHookRDR2 V2 | 2.0 (`.lib`) | `https://www.nexusmods.com/reddeadredemption2/mods/1472` | `lib\ScriptHookRDR2.lib`: `9c6851bc4c104f457e2f0b376a01f8f2f4546af0d569222eb256f65ade577ba0` |
+| ScriptHookRDR2 SDK (Alexander Blade) | 1.0.1207.73 (`main.h`, `types.h`) | `http://dev-c.com` | `inc\main.h`: `c5bc5a0d1368928a009cc7183e1e4006664228e1f4dea0a453360c350504a087`; `inc\types.h`: `6ef6a0781c724ee2e12a124353e674e02d29701591733d77ac39529e5d87218b` |
+| `natives.h` | згенеровано 2026-09-27 18:44 GMT | `https://alloc8or.re/rdr3/nativedb/` | `inc\natives.h`: `539a51ba946302012f1e20693439d092a80c64b0b62f8874b6bea76d209a66ba` |
+
+Суми пораховано 2026-11-17 з файлів, з якими зібрано 1.2.2 (тег `v1.2.2`).
 
 У `.gitignore` мають бути рядки `inc/` і `lib/` (у ньому вже є `*.lib`; тек це не покриває).
 
