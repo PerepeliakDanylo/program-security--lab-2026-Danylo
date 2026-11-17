@@ -4,7 +4,7 @@
 | --- | --- |
 | Назва | Приймальний чек-лист: що запустити, що має бути видно, якій вимозі це відповідає |
 | Версія | 0.4.3 |
-| Статус | Прогони в грі: 1.0.0 — 2026-10-19; тестова 1.1.0 — 2026-10-20/22 (лог `info` і лог `debug`); 1.2.0 — 2026-10-27 (два запуски: сповільнений і стоковий `weapons.ymt`); 1.2.1 — 2026-10-28 (`run3.log`, `info` + `debug`). Група H — результати 1.1.0; група I — результати 1.2.0; група J — результати 1.2.1 (7/7 `ok`); група K — фікси 1.2.2 (очікує прогону). **1.2.1 схвалено 2026-10-28** за прогоном `run3.log` і **опубліковано на NexusMods 2026-11-16** без повного чек-листа (42 пункти виконано) — відхилення від §12 політики записано в `../../docs/changelog.md` |
+| Статус | Прогони в грі: 1.0.0 — 2026-10-19; тестова 1.1.0 — 2026-10-20/22 (лог `info` і лог `debug`); 1.2.0 — 2026-10-27 (два запуски: сповільнений і стоковий `weapons.ymt`); 1.2.1 — 2026-10-28 (`run3.log`, `info` + `debug`). Група H — результати 1.1.0; група I — результати 1.2.0; група J — результати 1.2.1 (7/7 `ok`); група K — 1.2.2: 3 з 5 ok (AT-94, AT-95 — з лога гравця). **1.2.1 схвалено 2026-10-28** за прогоном `run3.log` і **опубліковано на NexusMods 2026-11-16** без повного чек-листа (42 пункти виконано) — відхилення від §12 політики записано в `../../docs/changelog.md` |
 | Останнє оновлення | 2026-11-17 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | `DESIGN.md`, `NATIVES.md`, `UNVERIFIED.md`, `../../docs/specification/requirements.md`, `../../docs/security/security_requirements.md` |
@@ -266,11 +266,11 @@ AT-93, AT-96 і AT-97 Дан проганяє у своїй грі; AT-94 зак
 
 | # | Дія | Доказ | Трасування | Результат |
 |---|---|---|---|---|
-| AT-93 | Старт 1.2.2 на грі розробника (`info`) | `weapon-info class recognised … AnimReloadRate at name+0x0180`; рядка з `best offset=0x0004` немає; `AnimReloadRate bindings: … 0 value only`; рядки `snapshot:` — зі значеннями гри (на стоковому файлі `1.0000`/`1.3000`), а не зі значень `Calm_*` INI | SR-09, DESIGN §3.3 | очікує |
+| AT-93 | Старт 1.2.2 на грі розробника (`info`) | `weapon-info class recognised … AnimReloadRate at name+0x0180`; рядка з `best offset=0x0004` немає; `AnimReloadRate bindings: … 0 value only`; рядки `snapshot:` — зі значеннями гри (на стоковому файлі `1.0000`/`1.3000`), а не зі значень `Calm_*` INI | SR-09, DESIGN §3.3 | ok 2026-11-17: 16:27:23 weapon-info class recognised … name+0x0180; рядка best offset=0x0004 немає; 0 value only; snapshot — 1.0000/1.3000 |
 | AT-94 | Лог 1.2.2 від гравця з великими модами зброї (Markie98) | `weapon-info class recognised: qword at name-0x20 = RDR2.exe+0x…; AnimReloadRate at name+0x0180`; рядок `class candidate N: … ok=1` для `N` > 12 (або ≤ 12, якщо клас піднявся); `0 value only`; рядки `… weapon-info objects carry this name; patching the first 4` — переписати в результат (кандидат 1.2.3, DESIGN §9) | FR-32, DESIGN §3.7 | очікує лог |
 | AT-95 | Fallback value-only (лише з чужого лога, де клас не розпізнано) | `AnimReloadRate signature=stock best offset=… exact=E contradicted=0 … -> accepted` при другому місці з протиріччями; жодного `-> accepted` для офсета з `contradicted >= exact` | FR-32, DESIGN §3.4 | очікує лог; огляд коду 2026-11-17 — правило (C) і поріг 10 % у value-only на місці |
-| AT-96 | Регресія старту 1.2.2 (`ForceAnimReloadRateOffset` закоментовано або `0`) | `RDR2 Dynamic Reload 1.2.2 starting` рівно 1 раз; `start-up: 59 weapon structures for 59 names`; жодного рядка `error`; `F7` → `restore: … fields returned`; перезарядка в `CALM` повільніша, у `COMBAT` — стокова; `background scan finished in … ms` — записати й порівняти з 1.2.1 на тій самій грі (`run3.log`: 2532 ms; 64 гіпотези замість 12) | FR-28, FR-32, NFR-03 | очікує |
-| AT-97 | Три рази `F9`, потім `F7` і знову `F7` (регресія для таблиці конфігу одним блоком) | Після кожного `F9`: `config rebind: 59 weapon structure(s) re-bound, 0 lost their section` і нові рядки `plan:`; після `F7`: `restore: …`; після другого `F7`: `CALM applied: …`; жодного `error` | FR-57, DESIGN §3.3 | очікує |
+| AT-96 | Регресія старту 1.2.2 (`ForceAnimReloadRateOffset` закоментовано або `0`) | `RDR2 Dynamic Reload 1.2.2 starting` рівно 1 раз; `start-up: 59 weapon structures for 59 names`; жодного рядка `error`; `F7` → `restore: … fields returned`; перезарядка в `CALM` повільніша, у `COMBAT` — стокова; `background scan finished in … ms` — записати й порівняти з 1.2.1 на тій самій грі (`run3.log`: 2532 ms; 64 гіпотези замість 12) | FR-28, FR-32, NFR-03 | ok 2026-11-17: RDR2 Dynamic Reload 1.2.2 starting ×1; 59 structures; error — 0; restore о 16:29:56; CALM/COMBAT applied; scan 2047 ms (1.2.1 у run3.log — 2532 ms) |
+| AT-97 | Три рази `F9`, потім `F7` і знову `F7` (регресія для таблиці конфігу одним блоком) | Після кожного `F9`: `config rebind: 59 weapon structure(s) re-bound, 0 lost their section` і нові рядки `plan:`; після `F7`: `restore: …`; після другого `F7`: `CALM applied: …`; жодного `error` | FR-57, DESIGN §3.3 | ok 2026-11-17: config rebind … 0 lost — 16:29:45, 16:29:47, 16:29:49; restore о 16:29:56; error — 0 |
 
 ## 9. Стан виконання
 
@@ -287,8 +287,8 @@ AT-93, AT-96 і AT-97 Дан проганяє у своїй грі; AT-94 зак
 | H — тестова 1.1.0 | 8 | 7 |
 | I — 1.2.0 | 15 | 14 |
 | J — 1.2.1 | 7 | 7 |
-| K — 1.2.2 (очікує прогону) | 5 | 0 |
-| **Разом** | **102** | **42** |
+| K — 1.2.2 (AT-94, AT-95 чекають лога гравця) | 5 | 3 |
+| **Разом** | **102** | **45** |
 
 Прогони: 1.0.0 — 2026-10-19; тестова 1.1.0 — 2026-10-20/22; 1.2.0 — 2026-10-27 (група I: 11 ok,
 3 частково — AT-77 і AT-79 виправлено в 1.2.1 (AT-91, AT-89), AT-83 частково в прогоні 1.2.1;

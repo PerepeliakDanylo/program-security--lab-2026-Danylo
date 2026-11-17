@@ -9,7 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Project documentation is kept in Ukrainian; this file, the shipped `README.txt`, the presets and
 the plugin's log are in English.
 
-## [1.2.2] - unreleased
+## [1.2.2] - 2026-11-17
 
 Start-up detection fix for heavily modded games, found from a player's log on 1.2.1 (NexusMods
 user Markie98, game build 1.0.1491.50, several large weapon mods). On that setup 1.2.1 either
