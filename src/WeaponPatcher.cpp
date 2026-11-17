@@ -38,9 +38,9 @@ constexpr std::int32_t kClassDeltaMin            = -0x100;
 constexpr std::int32_t kClassDeltaMax            = 0x10;
 // Every structure type that keeps a weapon hash next to a pointer into RDR2.exe
 // becomes a hypothesis; only the weapon-info class also holds the reload field,
-// which the verification step proves. 12 leaves room for catalog-like tables
-// that rank above it (one entry per weapon, too) - each costs ~1 M reads.
-constexpr std::size_t  kMaxClassHypotheses       = 12u;
+// which the verification step proves. 64 leaves plenty of room when catalog or
+// modded tables tie at 59/59 names ahead of CWeaponInfo (e.g. a gun has >4 copies).
+constexpr std::size_t  kMaxClassHypotheses       = 64u;
 constexpr std::size_t  kMaxClassObjects          = 16384u;
 constexpr std::size_t  kMaxUnlistedObjects       = 4096u;
 constexpr int          kMaxUnlistedAdopted       = 256;
@@ -105,7 +105,53 @@ void formatDelta(std::int32_t delta, char* buffer, std::size_t size)
     _snprintf_s(buffer, size, _TRUNCATE, "%s0x%X", delta < 0 ? "-" : "+", magnitude);
 }
 
+bool inByteRange(const void* address, const void* begin, const void* end) noexcept
+{
+    if (address == nullptr || begin == nullptr || end == nullptr)
+    {
+        return false;
+    }
+    const auto p  = reinterpret_cast<std::uintptr_t>(address);
+    const auto lo = reinterpret_cast<std::uintptr_t>(begin);
+    const auto hi = reinterpret_cast<std::uintptr_t>(end);
+    return p >= lo && p < hi;
+}
+
+template <typename T>
+bool inVectorBuffer(const void* address, const std::vector<T>& vec) noexcept
+{
+    return !vec.empty() && inByteRange(address, vec.data(), vec.data() + vec.size());
+}
+
 } // namespace
+
+// 1.2.2. The scan reads the process heap, which the plugin shares with the game,
+// and the plugin's own tables keep weapon hashes next to rate-like floats
+// (Config::m_weapons: the hash at +0x20, Calm_AnimReloadRate at +0x24). A
+// candidate inside one of these live buffers is the plugin talking to itself and
+// is dropped. Freed copies are avoided at the source: Config reserves its table
+// once (kWeaponTableReserve), so it is never reallocated while the INI is parsed.
+bool WeaponPatcher::isOwnHeapAddress(const void* address, const Config& config) const noexcept
+{
+    const auto cfgRange = config.weaponBufferRange();
+    return inByteRange(address, cfgRange.first, cfgRange.second) ||
+           inVectorBuffer(address, m_names) ||
+           inVectorBuffer(address, m_profiles) ||
+           inVectorBuffer(address, m_weapons) ||
+           inVectorBuffer(address, m_unlisted);
+}
+
+float WeaponPatcher::stockRateForTarget(const WeaponTarget& target) noexcept
+{
+    // Honour explicit INI [Vanilla] entries for the weapon's exact name (not prefix
+    // matches from base weapons onto unlisted DLC variants), else built-in table.
+    if (target.config != nullptr && target.config->vanillaAnimReloadRate.present &&
+        target.config->name == target.name)
+    {
+        return target.config->vanillaAnimReloadRate.value;
+    }
+    return (target.reference != nullptr) ? target.reference->vanillaAnimReloadRate : 0.0f;
+}
 
 const char* bindKindName(BindKind kind)
 {
@@ -292,6 +338,24 @@ bool WeaponPatcher::collectNames(const Config& config)
         m_profiles.push_back(profile);
     }
 
+    // Also include any custom weapon name explicitly configured under INI [Vanilla]
+    // that is not already present in the compiled-in reference table.
+    for (const WeaponEntry* entry : config.signatureWeapons())
+    {
+        const bool exists = std::any_of(m_names.begin(), m_names.end(),
+                                        [entry](const NamedWeapon& n) { return n.name == entry->name; });
+        if (exists)
+        {
+            continue;
+        }
+        NamedWeapon named;
+        named.name      = entry->name;
+        named.hash      = entry->hash;
+        named.reference = nullptr;
+        named.config    = config.matchWeapon(named.name);
+        m_names.push_back(named);
+    }
+
     DRS_INFO("resolver: %zu weapon names, %zu sectioned profiles to look for%s",
              m_names.size(), m_profiles.size(),
              sectioned ? "" : " (PatchSectionedReload = 0: AnimReloadRate only)");
@@ -300,7 +364,7 @@ bool WeaponPatcher::collectNames(const Config& config)
 
 // ---------------------------------------------------------------------------
 
-// Offset search (rewritten in 1.2).
+// Offset search (rewritten in 1.2, scoring unified in 1.2.2).
 //
 // An offset is a CANDIDATE only if
 //   (A) at least MinConsensusWeapons names show exactly their expected value there,
@@ -310,12 +374,18 @@ bool WeaponPatcher::collectNames(const Config& config)
 //       weapons.ymt such a field matches all 44 "1.00" guns and none of the "1.30"
 //       ones, and with the 1.1 margin rule it tied with the real field (the 1.1
 //       log shows two of them, 0x032C and 0x0330, at 44 exact matches each);
-//   (C) strict mode only: it is contradicted (another value in the one object of
-//       a name) less often than it is confirmed.
-// Among candidates the highest score wins - exact matches, minus contradictions
-// in strict mode - and it must clearly beat the second candidate: by 10 % in
-// strict mode (the objects are known to be the right class), by ConsensusMargin
-// otherwise.
+//   (C) it is contradicted less often than it is confirmed. A name is
+//       contradicted when its candidates hold readable values there but none of
+//       them is the expected one. Strict mode looks at the objects of the
+//       recognised class; since 1.2.2 the value-only fallback applies the same
+//       rule to its raw candidates. 1.2.1 skipped (C) there, and a calm match in
+//       the plugin's own config table (23 exact, 36 contradicted) was accepted.
+// Among candidates the highest score wins - exact matches minus contradictions,
+// in both modes since 1.2.2 - and it must clearly beat the second candidate:
+// by 10 % in strict mode (the objects are known to be the right class) and when a
+// winner without contradictions faces a runner-up that has some (1.2.2: in 1.2.1 a
+// clean 52/52 lost to a 45-match neighbour under the 1.5x rule); by
+// ConsensusMargin otherwise.
 DiscoveryResult WeaponPatcher::discoverOffset(const char* fieldName,
                                               const std::vector<std::vector<Candidate>>& candidates,
                                               const std::vector<float>& expected,
@@ -361,6 +431,7 @@ DiscoveryResult WeaponPatcher::discoverOffset(const char* fieldName,
     int           bestDistinct = 0;
     std::uint32_t bestOffset   = 0u;
     int           secondScore  = 0;
+    int           secondContra = 0;
     std::uint32_t secondOffset = 0u;
     int           mostExact    = 0;   // for the log when nothing qualifies
 
@@ -432,18 +503,19 @@ DiscoveryResult WeaponPatcher::discoverOffset(const char* fieldName,
         {
             continue;   // (B)
         }
-        if (strict && contradicted >= exact)
+        if (contradicted >= exact)
         {
-            continue;   // (C)
+            continue;   // (C) never accept an offset that fails more names than it matches
         }
 
-        const int score = strict ? (exact - contradicted) : exact;
+        const int score = exact - contradicted;
         if (!haveBest || score > bestScore)
         {
             if (haveBest)
             {
                 haveSecond   = true;
                 secondScore  = bestScore;
+                secondContra = bestContra;
                 secondOffset = bestOffset;
             }
             haveBest     = true;
@@ -457,6 +529,7 @@ DiscoveryResult WeaponPatcher::discoverOffset(const char* fieldName,
         {
             haveSecond   = true;
             secondScore  = score;
+            secondContra = contradicted;
             secondOffset = offset;
         }
     }
@@ -472,7 +545,11 @@ DiscoveryResult WeaponPatcher::discoverOffset(const char* fieldName,
     bool clearWinner = true;
     if (haveSecond)
     {
-        clearWinner = strict
+        // A clean zero-contradiction match against a runner-up that actually
+        // contradicts weapons cannot satisfy a 1.5x margin once >=35 weapons match
+        // a 1.00 neighbor (e.g. 52/0 vs 45/7 = score 52 vs 38).
+        const bool zeroVsContradicted = !strict && (bestContra == 0) && (secondContra > 0);
+        clearWinner = (strict || zeroVsContradicted)
             ? (secondScore * 10 < bestScore * 9)
             : (static_cast<float>(bestScore) >=
                memory.consensusMargin * static_cast<float>(secondScore));
@@ -717,12 +794,22 @@ bool WeaponPatcher::chooseClassAndOffset(const Config& config,
     {
         const ClassHypothesis& hypothesis = hypotheses[h];
         formatDelta(hypothesis.delta, deltaText, sizeof(deltaText));
-        DRS_INFO("resolver: class candidate %zu: qword at name%s = RDR2.exe+0x%llX, on %d names "
-                 "(%d of them with 1-%d objects)",
-                 h + 1, deltaText,
-                 static_cast<unsigned long long>(MemScan::mainModuleOffset(
-                     reinterpret_cast<const void*>(hypothesis.value))),
-                 hypothesis.names, hypothesis.definitionNames, kMaxInstancesPerName);
+        const unsigned long long rva = static_cast<unsigned long long>(
+            MemScan::mainModuleOffset(reinterpret_cast<const void*>(hypothesis.value)));
+        if (h < 12u)
+        {
+            DRS_INFO("resolver: class candidate %zu: qword at name%s = RDR2.exe+0x%llX, on %d names "
+                     "(%d of them with 1-%d objects)",
+                     h + 1, deltaText, rva,
+                     hypothesis.names, hypothesis.definitionNames, kMaxInstancesPerName);
+        }
+        else
+        {
+            DRS_DEBUG("resolver: class candidate %zu: qword at name%s = RDR2.exe+0x%llX, on %d names "
+                      "(%d of them with 1-%d objects)",
+                      h + 1, deltaText, rva,
+                      hypothesis.names, hypothesis.definitionNames, kMaxInstancesPerName);
+        }
     }
     if (hypotheses.empty())
     {
@@ -730,6 +817,12 @@ bool WeaponPatcher::chooseClassAndOffset(const Config& config,
     }
 
     // --- pinned offset ------------------------------------------------------
+    // The pinned value is trusted. Config has checked the window and the
+    // alignment; here it is only asked WHICH value set lies there (stock or calm)
+    // and which class carries it - it is never compared with the automatic
+    // search. A wrong pin (e.g. the runner-up offset a log printed) therefore
+    // switches another float field of the same objects. README.txt tells players
+    // to pin only the offset their own log printed as the accepted best offset.
     if (memory.forceAnimOffset >= 0)
     {
         const std::uint32_t offset = static_cast<std::uint32_t>(memory.forceAnimOffset);
@@ -818,10 +911,20 @@ bool WeaponPatcher::chooseClassAndOffset(const Config& config,
             picked = stockPass;
         }
 
-        DRS_INFO("resolver: class candidate %zu: AnimReloadRate stock ok=%d sig=%d off=0x%04X | "
-                 "calm ok=%d sig=%d off=0x%04X",
-                 h + 1, stockPass.ok ? 1 : 0, stockPass.signatureHits, stockPass.offset,
-                 calmPass.ok ? 1 : 0, calmPass.signatureHits, calmPass.offset);
+        if (h < 12u || stockPass.ok || calmPass.ok)
+        {
+            DRS_INFO("resolver: class candidate %zu: AnimReloadRate stock ok=%d sig=%d off=0x%04X | "
+                     "calm ok=%d sig=%d off=0x%04X",
+                     h + 1, stockPass.ok ? 1 : 0, stockPass.signatureHits, stockPass.offset,
+                     calmPass.ok ? 1 : 0, calmPass.signatureHits, calmPass.offset);
+        }
+        else
+        {
+            DRS_DEBUG("resolver: class candidate %zu: AnimReloadRate stock ok=%d sig=%d off=0x%04X | "
+                      "calm ok=%d sig=%d off=0x%04X",
+                      h + 1, stockPass.ok ? 1 : 0, stockPass.signatureHits, stockPass.offset,
+                      calmPass.ok ? 1 : 0, calmPass.signatureHits, calmPass.offset);
+        }
 
         if (picked.ok && picked.signatureHits > bestSig)
         {
@@ -1031,7 +1134,7 @@ void WeaponPatcher::bindWeapons(const Config& config, const std::vector<float>& 
 // Read-only, resolver thread, one pass like the name scan.
 // ---------------------------------------------------------------------------
 
-void WeaponPatcher::classScan()
+void WeaponPatcher::classScan(const Config& config)
 {
     const std::uint32_t offset = m_animDiscovery.offset;
     const std::size_t   need   = static_cast<std::size_t>(offset) + 4u;
@@ -1048,7 +1151,7 @@ void WeaponPatcher::classScan()
     for (std::uint8_t* hit : hits)
     {
         std::uint8_t* nameAddress = hit - m_classDelta;
-        if (m_scan.spanFromRegions(nameAddress, need) < need)
+        if (isOwnHeapAddress(nameAddress, config) || m_scan.spanFromRegions(nameAddress, need) < need)
         {
             ++rejected;
             continue;
@@ -1393,11 +1496,15 @@ bool WeaponPatcher::resolve(const Config& config)
         return false;
     }
 
-    auto toCandidates = [this, span](const ScanResult& result) {
+    auto toCandidates = [this, &config, span](const ScanResult& result) {
         std::vector<Candidate> list;
         list.reserve(result.hits.size());
         for (std::uint8_t* hit : result.hits)
         {
+            if (isOwnHeapAddress(hit, config))
+            {
+                continue;
+            }
             Candidate candidate;
             candidate.address      = hit;
             candidate.readableSpan = m_scan.spanFromRegions(hit, span);
@@ -1449,15 +1556,20 @@ bool WeaponPatcher::resolve(const Config& config)
         return false;
     }
 
-    // --- expected values: stock (table) and calm (INI) -----------------------
+    // --- expected values: stock (INI [Vanilla] override or table) and calm (INI) ---
     std::vector<float> vanillaAnim;
     std::vector<float> calmAnim;
     vanillaAnim.reserve(m_names.size());
     calmAnim.reserve(m_names.size());
     for (const NamedWeapon& named : m_names)
     {
-        vanillaAnim.push_back(named.reference != nullptr ? named.reference->vanillaAnimReloadRate
-                                                         : 0.0f);
+        float stockRate = (named.reference != nullptr) ? named.reference->vanillaAnimReloadRate : 0.0f;
+        if (named.config != nullptr && named.config->vanillaAnimReloadRate.present &&
+            named.config->name == named.name)
+        {
+            stockRate = named.config->vanillaAnimReloadRate.value;
+        }
+        vanillaAnim.push_back(stockRate);
         calmAnim.push_back((named.config != nullptr && named.config->calm.animReloadRate.present)
                                ? named.config->calm.animReloadRate.value
                                : 0.0f);
@@ -1477,7 +1589,7 @@ bool WeaponPatcher::resolve(const Config& config)
 
     if (m_classKnown)
     {
-        classScan();
+        classScan(config);
     }
     else
     {
@@ -1530,17 +1642,18 @@ bool WeaponPatcher::resolve(const Config& config)
 
 // ---------------------------------------------------------------------------
 
-void WeaponPatcher::takeSnapshot()
+void WeaponPatcher::takeSnapshot(const Config& config)
 {
     // Runs on the resolver thread, read-only. The page check uses the protection
     // the region list recorded (no system call); this plugin never changes it.
-    auto snap = [this](FieldTarget& field) -> bool {
+    auto snap = [this, &config](FieldTarget& field) -> bool {
         if (field.address == nullptr)
         {
             return false;
         }
         float value = 0.0f;
-        if (!MemScan::passesStaticChecks(field.address) ||
+        if (isOwnHeapAddress(field.address, config) ||
+            !MemScan::passesStaticChecks(field.address) ||
             !m_scan.regionAllowsWrite(field.address, sizeof(float)) ||
             !MemScan::readFloat(field.address, value) ||
             !std::isfinite(value) || value < kLiveValueMin || value > kLiveValueMax)
@@ -1632,7 +1745,7 @@ bool WeaponPatcher::initialise(const Config& config)
         }
     }
 
-    takeSnapshot();
+    takeSnapshot(config);
 
     // The scan results are not needed past this point, and the config pointers in
     // m_names are only valid until the next F9 - drop both.
@@ -1756,8 +1869,7 @@ bool WeaponPatcher::snapshotIsStock(const WeaponTarget& target, const Config& co
 {
     const float epsilon = config.defaults().vanillaEpsilon;
     const float loaded  = target.anim.snapshot;
-    const float stock   = (target.reference != nullptr) ? target.reference->vanillaAnimReloadRate
-                                                        : 0.0f;
+    const float stock   = stockRateForTarget(target);
     if (stock > 0.0f)
     {
         return closeEnough(loaded, stock, epsilon);
@@ -1831,8 +1943,7 @@ float WeaponPatcher::decideAnim(const WeaponTarget& target, bool combat, const C
         why = "ini";
         return combatIni->value;
     }
-    const float stock = (target.reference != nullptr) ? target.reference->vanillaAnimReloadRate
-                                                      : 0.0f;
+    const float stock = stockRateForTarget(target);
     if (stock > 0.0f)
     {
         why = "stock";

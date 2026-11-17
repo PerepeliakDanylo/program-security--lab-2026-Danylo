@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace drs {
@@ -167,6 +168,10 @@ public:
 
     const std::vector<WeaponEntry>& weapons() const noexcept { return m_weapons; }
     const std::vector<std::string>& supportedBuilds() const noexcept { return m_supportedBuilds; }
+
+    // Byte range [begin, end) of m_weapons storage in process heap, so MemScan /
+    // WeaponPatcher can exclude the plugin's own config table from scanning.
+    std::pair<const void*, const void*> weaponBufferRange() const noexcept;
 
     bool loadedFromFile() const noexcept { return m_loadedFromFile; }
     int  warningCount()   const noexcept { return m_warnings; }

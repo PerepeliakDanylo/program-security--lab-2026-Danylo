@@ -22,7 +22,7 @@ namespace drs {
 
 namespace {
 
-constexpr const char*   kPluginVersion  = "1.2.1";
+constexpr const char*   kPluginVersion  = "1.2.2";
 constexpr int           kMaxTickErrors  = 10;
 
 // Start-up timing (1.1). Weapon data is parsed at game boot, long before any

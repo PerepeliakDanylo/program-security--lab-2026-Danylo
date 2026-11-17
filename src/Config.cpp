@@ -50,6 +50,16 @@ const VanillaRow kBuiltInVanilla[] = {
     { "WEAPON_SHOTGUN_SAWEDOFF",         1.00f },
 };
 
+// Capacity of the weapon table, reserved once before the first entry exists
+// (1.2.2). Every WeaponEntry keeps the weapon's name hash right next to its
+// Calm_AnimReloadRate (hash + 0x04). A reallocation while the INI is parsed would
+// leave the old block - hashes and Calm values included - in freed heap memory,
+// where the start-up scan can find it, and WeaponPatcher::isOwnHeapAddress() only
+// knows the live buffer. clear() keeps the capacity, so F9 reuses the same block:
+// no freed copy of the table exists for any INI with fewer weapon names than this.
+constexpr std::size_t kWeaponTableReserve =
+    ParseLimits::kMaxSections + sizeof(kBuiltInVanilla) / sizeof(kBuiltInVanilla[0]);
+
 std::string trim(const std::string& text)
 {
     std::size_t first = 0;
@@ -228,6 +238,7 @@ void Config::applyBuiltInDefaults()
     m_memory   = MemorySettings();
     m_debug    = DebugSettings();
     m_weapons.clear();
+    m_weapons.reserve(kWeaponTableReserve);   // one block per session, see kWeaponTableReserve
     m_supportedBuilds.clear();
     m_warnings       = 0;
     m_loadedFromFile = false;
@@ -831,6 +842,15 @@ std::vector<const WeaponEntry*> Config::signatureWeapons() const
         }
     }
     return result;
+}
+
+std::pair<const void*, const void*> Config::weaponBufferRange() const noexcept
+{
+    if (m_weapons.empty())
+    {
+        return { nullptr, nullptr };
+    }
+    return { m_weapons.data(), m_weapons.data() + m_weapons.size() };
 }
 
 } // namespace drs

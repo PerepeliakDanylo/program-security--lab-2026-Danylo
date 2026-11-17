@@ -97,9 +97,9 @@ struct DiscoveryResult
 {
     bool          ok             = false;
     std::uint32_t offset         = 0u;
-    int           score          = 0;     // exact matches (minus contradictions in strict mode)
+    int           score          = 0;     // exact matches minus contradictions (both modes since 1.2.2)
     int           signatureHits  = 0;     // names whose value at the offset is exactly the expected one
-    int           contradicted   = 0;     // strict mode: names whose single object holds another value
+    int           contradicted   = 0;     // names whose objects hold readable values, none the expected one
     int           distinctValues = 0;     // different expected values among the exact matches
     std::uint32_t runnerUpOffset = 0u;
     int           runnerUpScore  = 0;
@@ -215,13 +215,18 @@ private:
                               const std::vector<float>& calmAnim,
                               bool& matchedCalmOut);
     void bindWeapons(const Config& config, const std::vector<float>& expected);
-    void classScan();
+    void classScan(const Config& config);
     void resolveSectioned(const Config& config);
     bool discoverConditionStride(const Config& config);
-    void takeSnapshot();
+    void takeSnapshot(const Config& config);
+
+    bool isOwnHeapAddress(const void* address, const Config& config) const noexcept;
+    static float stockRateForTarget(const WeaponTarget& target) noexcept;
 
     // strict = the candidates were filtered by the class marker, so each name has
     // (about) one object and a non-matching value there counts AGAINST an offset.
+    // Since 1.2.2 the value-only fallback (strict = false) counts contradictions
+    // too; the modes differ only in the separation rule (see the definition).
     DiscoveryResult discoverOffset(const char* fieldName,
                                    const std::vector<std::vector<Candidate>>& candidates,
                                    const std::vector<float>& expected,
