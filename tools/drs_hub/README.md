@@ -1,0 +1,83 @@
+# drs_hub — службовий сервер супроводжувача DRS
+
+Цільова тека в репозиторії: `tools/drs_hub/`
+
+Клієнт-серверна частина проєкту (ЛР10–11 і далі). Невеликий HTTPS-сервер на стандартній бібліотеці
+Python (+ `cryptography` для сертифікатів) і клієнт командного рядка. Призначення — службові дані
+супроводу мода:
+
+- **реєстр релізів**: записи «версія → файли → SHA-256 → тег/коміт → канал» (публічне читання,
+  запис — лише супроводжувач). Гравець чи інструмент може звірити хеш завантаженого архіву;
+- з ЛР13–14 — **прийом діагностичних звітів тестерів** (лог, INI, перелік модів), зашифрованих на
+  боці тестера для супроводжувача (сервер бачить лише шифротекст).
+
+**Чого тут немає і не буде:** плагін `DynamicReloadSpeed.asi` і гра з сервером не взаємодіють —
+плагін, як і раніше, не має мережевої функціональності (NFR-12). Сервер — інструмент супроводжувача.
+
+## Файли
+
+| Файл | Призначення |
+|---|---|
+| `hub_server.py` | ядро: HTTPS, маршрутизатор, читання тіла з межами, автентифікація Bearer перед обробником, єдиний формат помилок, заголовки безпеки, `X-Request-ID`, журнал доступу |
+| `hub_routes_core.py` | маршрути: `/api/v1/health`, `/oauth/token`, `/oauth/revoke`, `/api/v1/whoami`, `/api/v1/releases` |
+| `hub_auth.py` | OAuth 2.0 Client Credentials, непрозорі Bearer-токени (лише SHA-256 у базі), ролі й скоупи, блокування перебору |
+| `hub_store.py` | SQLite: клієнти, токени, лічильники невдач, релізи |
+| `hub_config.py` | несекретні налаштування (`hub.json`), шляхи, блокування теки даних |
+| `hub_tls.py` | власний CA (ключ CA не зберігається) і сертифікат сервера для `localhost`/`127.0.0.1` |
+| `hub_log.py` | журнал сервера (`logs/` теки даних) |
+| `hub_admin.py` | локальне адміністрування: `init`, клієнти, ротація секретів, відкликання токенів |
+| `hub_client.py` | клієнт командного рядка |
+| `hub_selftest.py` | самоперевірка: справжній сервер у тимчасовій теці + сценарії через клієнт |
+| `requirements.txt` | `cryptography` |
+
+## Модель автентифікації й авторизації
+
+| Що | Рішення |
+|---|---|
+| Канал | TLS 1.2+; клієнт довіряє лише CA сервера (`ca_cert.pem`) і перевіряє ім'я хоста; HTTP без TLS — лише `127.0.0.1` з `--insecure-http` |
+| Хто клієнт | Супроводжувач, тестер чи аудитор — **програма-клієнт** з `client_id` + `client_secret` (OAuth 2.0 Client Credentials, RFC 6749 §4.4; секрет — лише в `Authorization: Basic`) |
+| Стан після входу | Непрозорий токен доступу 256 біт (`dha_…`), 10 хв, схема Bearer (RFC 6750). Сервер зберігає **лише SHA-256** токена; відкликання — `POST /oauth/revoke` (RFC 7009). Токенів оновлення немає (для Client Credentials не потрібні) |
+| Права | Роль → скоупи (`hub_auth.ROLE_SCOPES`); маршрут вимагає скоуп; суб'єкт — лише з токена. Керування клієнтами — лише локально (`hub_admin.py`), мережевого API адміністрування немає |
+| Перебір | 5 невдач для `client_id` → блокування 5 хв із подвоєнням до 60 хв; 20 невдач з адреси за 10 хв → тимчасова відмова; відповідь однакова для неіснуючого й наявного клієнта |
+
+| Роль | Скоупи |
+|---|---|
+| `tester` | `reports:submit`, `reports:read:own` |
+| `maintainer` | `releases:write`, `reports:read`, `ledger:read`, `metrics:read` |
+| `auditor` | `ledger:read`, `metrics:read` |
+
+## Встановлення й запуск (Windows, PowerShell)
+
+```powershell
+cd tools\drs_hub
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python hub_selftest.py                          # → drs_hub self-test: N/N OK
+python hub_admin.py init                        # тека даних %USERPROFILE%\.drs_hub (поза репозиторієм)
+python hub_admin.py add-client dan-maintainer --role maintainer --secret-out "$env:USERPROFILE\.drs_hub_clients\dan-maintainer.secret"
+python hub_server.py                            # https://127.0.0.1:8443, Ctrl+C — зупинка
+```
+
+В іншому вікні:
+
+```powershell
+$env:DRS_HUB_CA = "$env:USERPROFILE\.drs_hub\tls\ca_cert.pem"
+$env:DRS_HUB_CLIENT_ID = "dan-maintainer"
+python hub_client.py health
+python hub_client.py --secret-file "$env:USERPROFILE\.drs_hub_clients\dan-maintainer.secret" whoami
+python hub_client.py --secret-file "…\dan-maintainer.secret" publish-release release_1.2.2.json
+python hub_client.py releases
+```
+
+Тека даних і файли секретів **ніколи** не лежать у репозиторії: `hub_admin.py init`, `hub_server.py`
+і `--secret-out` відмовляють, якщо шлях усередині робочого дерева git.
+
+## Відомі обмеження
+
+- Сертифікат виписано лише на `localhost`/`127.0.0.1`; для доступу ззовні потрібен сертифікат на
+  справжнє ім'я хоста (і, ймовірно, зворотний проксі).
+- Закритий ключ сервера лежить у теці даних незашифрованим (сервер стартує без участі людини);
+  захищає його ACL профілю Windows.
+- Блокування `client_id` за 5 невдач дає змогу навмисно заблокувати чужого клієнта (відмова в
+  обслуговуванні); пом'якшення — короткі строки блокування й ліміт за адресою.
+- Сервер однопроцесний (потік на з'єднання) — для службового навантаження супроводу достатньо.
