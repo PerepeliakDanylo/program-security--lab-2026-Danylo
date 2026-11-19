@@ -27,6 +27,10 @@ Python (+ `cryptography` для сертифікатів) і клієнт ком
 | `hub_log.py` | журнал JSON Lines (UTC, `request_id`), безпековий журнал із ланцюгом SHA-256, редагування секретів, ротація, показники й сповіщення |
 | `hub_routes_ops.py` | `GET /api/v1/metrics` (скоуп `metrics:read`) |
 | `hub_monitor.py` | аналіз журналів (`summary`, `trace`, `verify`) і опитування показників (`metrics --watch`) |
+| `hub_e2ee.py` | наскрізне шифрування звітів: X25519 + HKDF-SHA256 + AES-256-GCM, конверт, ключі, безпечний пакет файлів |
+| `hub_routes_reports.py` | `POST/GET /api/v1/reports` — лише шифротекст і метадані; доступ свій / усі |
+| `hub_ledger.py`, `hub_routes_ledger.py` | хеш-ланцюг записів (релізи, звіти), квитанції, `GET /api/v1/ledger[/verify]`, CLI `verify | head | list` |
+| `report_recipient.pub` | відкритий ключ отримувача звітів (закритий — у супроводжувача, поза репозиторієм) |
 | `hub_admin.py` | локальне адміністрування: `init`, клієнти, ротація секретів, відкликання токенів |
 | `hub_client.py` | клієнт командного рядка |
 | `hub_selftest.py` | самоперевірка: справжній сервер у тимчасовій теці + сценарії через клієнт |
@@ -96,6 +100,35 @@ python hub_monitor.py metrics --client-id auditor-demo --secret-file "…\audito
 `GET /api/v1/metrics` (скоуп `metrics:read`) — показники процесу й стан бази; сповіщення
 `alert.raised`: `auth.bruteforce_ip`, `auth.lockout`, `authz.denied_burst`, `http.scan_404`,
 `http.error_burst`, `tls.handshake_burst`.
+
+## Звіти тестерів із наскрізним шифруванням і журнал записів (ЛР13–14)
+
+Тестер шифрує діагностичний пакет (лог, INI, перелік модів, примітку) **на своїй машині** відкритим
+ключем супроводжувача з файла `report_recipient.pub` (у репозиторії; із сервера ключ не береться):
+ефемерний X25519 → HKDF-SHA256 → AES-256-GCM, метадані — в AAD. Сервер зберігає лише шифротекст і
+метадані; розшифрувати може тільки супроводжувач своїм закритим ключем (PKCS#8, зашифрований фразою,
+поза репозиторієм). Кожен реліз і кожен звіт дописують блок у хеш-ланцюг (`prev_hash`, `hash`) у тій
+самій транзакції; клієнт отримує квитанцію (номер і хеш блока).
+
+| Маршрут | Доступ |
+|---|---|
+| `POST /api/v1/reports` | `reports:submit`; `meta.submitter` має дорівнювати `client_id` токена |
+| `GET /api/v1/reports`, `GET /api/v1/reports/{id}` | `reports:read` — усі; `reports:read:own` — лише власні (чужий → 404) |
+| `GET /api/v1/ledger`, `GET /api/v1/ledger/verify` | `ledger:read` |
+
+```powershell
+# супроводжувач, один раз (фраза ≥ 12 символів; закритий ключ — поза репозиторієм):
+python hub_client.py keygen --private "$env:USERPROFILE\.drs_hub_keys\report_key.pem" --public report_recipient.pub
+# тестер:
+python hub_client.py --client-id tester-demo --secret-file "…\tester-demo.secret" submit-report DynamicReloadSpeed.log mods.txt --note "…" --plugin-version 1.2.2 --game-build 1.0.1491.50
+# супроводжувач:
+python hub_client.py --client-id dan-maintainer --secret-file "…\dan-maintainer.secret" reports
+python hub_client.py --client-id dan-maintainer --secret-file "…\dan-maintainer.secret" decrypt-report <report_id> --private "…\report_key.pem"
+python hub_client.py --client-id auditor-demo --secret-file "…\auditor-demo.secret" ledger-verify
+python hub_ledger.py verify | head | list            # локально, без сервера
+```
+
+Рішення й обмеження — `docs/security/e2ee_ledger.md`.
 
 ## Відомі обмеження
 

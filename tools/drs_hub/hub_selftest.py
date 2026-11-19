@@ -447,6 +447,172 @@ def t_redaction(h):
           and "\n" not in line)
     return ok, f"client_secret → {rec['client_secret']}; detail → {rec['detail']}"
 
+# --- ЛР13–14: наскрізне шифрування звітів і журнал записів ------------------------------
+_MARKER = "DRS-SELFTEST-PLAINTEXT-7f3a"
+_PASS = b"selftest-passphrase"
+
+
+def _report_keys(h):
+    import hub_e2ee
+    keys = getattr(h, "_report_keys", None)
+    if keys is None:
+        private = os.path.join(h.tmp.name, "keys", "report_key.pem")
+        public = os.path.join(h.tmp.name, "report_recipient.pub")
+        hub_e2ee.generate_keypair(private, public, _PASS)
+        h.cfg.report_recipient_pub = public          # сервер читає відкритий ключ лише для звірки kid
+        keys = (private, public)
+        h._report_keys = keys
+        h._reports = {}
+    return keys
+
+
+def _submit(h, client_id: str, marker: str = _MARKER, submitter: str | None = None):
+    import hub_e2ee
+    _private, public = _report_keys(h)
+    bundle = hub_e2ee.build_bundle([("DynamicReloadSpeed.log", f"[info ] selftest {marker}\n".encode("utf-8")),
+                                    ("mods.txt", b"Munitions.asi\nDynamicReloadSpeed.asi\n")], note="selftest")
+    meta = hub_e2ee.new_meta(submitter or client_id, plugin_version="1.2.2", game_build="1.0.1491.50")
+    envelope = hub_e2ee.encrypt_report(hub_e2ee.load_public(public), bundle, meta)
+    status, payload = h.client(client_id).call("POST", "/api/v1/reports", envelope)
+    return status, payload if isinstance(payload, dict) else {}, envelope
+
+
+@case("E2EE (ЛР13): шифрування й розшифрування; змінений шифротекст, метадані, чужий ключ, невірна фраза → відмова")
+def t_e2ee_unit(h):
+    import base64
+    import hub_e2ee
+    private_path, public_path = _report_keys(h)
+    private = hub_e2ee.load_private(private_path, _PASS)
+    envelope = hub_e2ee.encrypt_report(hub_e2ee.load_public(public_path), b"hello " + _MARKER.encode("utf-8"),
+                                       hub_e2ee.new_meta("st-tester"))
+    plain, _meta = hub_e2ee.decrypt_report(private, envelope)
+    bad_ct = dict(envelope)
+    raw = bytearray(base64.b64decode(envelope["ct"]))
+    raw[0] ^= 1
+    bad_ct["ct"] = base64.b64encode(bytes(raw)).decode("ascii")
+    bad_meta = json.loads(json.dumps(envelope))
+    bad_meta["meta"]["submitter"] = "st-tester2"
+    hub_e2ee.generate_keypair(os.path.join(h.tmp.name, "keys", "other.pem"),
+                              os.path.join(h.tmp.name, "other.pub"), b"another-passphrase")
+    other = hub_e2ee.load_private(os.path.join(h.tmp.name, "keys", "other.pem"), b"another-passphrase")
+    refused = 0
+    for key, candidate in ((private, bad_ct), (private, bad_meta), (other, envelope)):
+        try:
+            hub_e2ee.decrypt_report(key, candidate)
+        except hub_e2ee.E2EEError:
+            refused += 1
+    try:
+        hub_e2ee.load_private(private_path, b"wrong-passphrase")
+        wrong_pass = False
+    except hub_e2ee.E2EEError:
+        wrong_pass = True
+    ok = plain.endswith(_MARKER.encode("utf-8")) and refused == 3 and wrong_pass
+    return ok, f"розшифровано {len(plain)} Б; відмов на підробках {refused}/3; невірна фраза → " \
+               f"{'відмова' if wrong_pass else 'ВІДКРИТО'}"
+
+
+@case("Звіт (ЛР13): тестер подає → 201 + квитанція журналу; у базі сервера немає відкритого тексту")
+def t_report_submit(h):
+    status, payload, _env = _submit(h, "st-tester")
+    h._reports["st-tester"] = payload.get("report_id")
+    with h.store.read() as conn:
+        dump = "\n".join(str(tuple(row)) for row in conn.execute("SELECT * FROM reports"))
+    clean = _MARKER not in dump and "DynamicReloadSpeed.log" not in dump and "Munitions" not in dump
+    ok = status == 201 and payload.get("ledger_index") is not None and clean
+    return ok, f"HTTP {status}, шифротекст {payload.get('size')} Б, блок {payload.get('ledger_index')}; " \
+               f"відкритого тексту в базі: {'немає' if clean else 'Є'}"
+
+
+@case("Звіт (ЛР13): meta.submitter ≠ client_id токена → 400; чужий ключ отримувача → 400")
+def t_report_mismatch(h):
+    import hub_e2ee
+    s1, p1, _ = _submit(h, "st-tester", submitter="st-tester2")
+    envelope = hub_e2ee.encrypt_report(hub_e2ee.load_public(os.path.join(h.tmp.name, "other.pub")),
+                                       hub_e2ee.build_bundle([("a.txt", b"a")]), hub_e2ee.new_meta("st-tester"))
+    s2, p2 = h.client("st-tester").call("POST", "/api/v1/reports", envelope)
+    ok = s1 == 400 and p1.get("error") == "submitter_mismatch" and s2 == 400 and p2.get("error") == "unknown_recipient_key"
+    return ok, f"підставний автор → {s1} {p1.get('error')}; чужий kid → {s2} {p2.get('error')}"
+
+
+@case("Доступ до звітів (ЛР13): свій — 200, чужий — 404; тестер бачить свої, супроводжувач — усі, аудитор — 403")
+def t_report_access(h):
+    rid = h._reports.get("st-tester")
+    s_own, _ = h.client("st-tester").call("GET", f"/api/v1/reports/{rid}")
+    s_foreign, _ = h.client("st-tester2").call("GET", f"/api/v1/reports/{rid}")
+    _submit(h, "st-tester2", marker="second-report")
+    s1, own_list = h.client("st-tester").call("GET", "/api/v1/reports")
+    s2, all_list = h.client("st-maintainer").call("GET", "/api/v1/reports")
+    s3, _ = h.client("st-auditor").call("GET", "/api/v1/reports")
+    ok = (s_own == 200 and s_foreign == 404 and own_list.get("scope") == "own" and own_list.get("count") == 1
+          and all_list.get("count") == 2 and s3 == 403
+          and all("ct" not in item and "envelope_json" not in item for item in all_list.get("reports", [])))
+    return ok, f"свій {s_own}, чужий {s_foreign}; список тестера {own_list.get('count')} ({own_list.get('scope')}), " \
+               f"супроводжувача {all_list.get('count')}, аудитор {s3}"
+
+
+@case("Розшифрування (ЛР13): лише ключем супроводжувача; ім'я «..\\..\\evil.txt» лишається в межах теки")
+def t_report_decrypt(h):
+    import hub_e2ee
+    private_path, _public = _report_keys(h)
+    rid = h._reports.get("st-tester")
+    status, envelope = h.client("st-maintainer").call("GET", f"/api/v1/reports/{rid}")
+    plain, meta = hub_e2ee.decrypt_report(hub_e2ee.load_private(private_path, _PASS), envelope)
+    bundle = hub_e2ee.parse_bundle(plain)
+    bundle["files"].append({"name": "..\\..\\evil.txt", "text": "path traversal attempt"})
+    out = os.path.join(h.tmp.name, "decrypted")
+    written = hub_e2ee.write_bundle(bundle, out)
+    inside = all(os.path.dirname(os.path.realpath(p)) == os.path.realpath(out) for p in written)
+    log_path = next(p for p in written if p.endswith("DynamicReloadSpeed.log"))
+    with open(log_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    ok = status == 200 and meta["submitter"] == "st-tester" and _MARKER in text and inside \
+        and any(p.endswith("evil.txt") for p in written)
+    return ok, f"HTTP {status}; від {meta['submitter']}; файлів {len(written)}, усі в межах теки: {inside}"
+
+
+@case("Журнал записів (ЛР14): genesis + реліз + звіти, ланцюг цілий; аудитор 200, тестер 403")
+def t_ledger_ok(h):
+    s_tester, _ = h.client("st-tester").call("GET", "/api/v1/ledger/verify")
+    s_auditor, result = h.client("st-auditor").call("GET", "/api/v1/ledger/verify")
+    s_list, listing = h.client("st-auditor").call("GET", "/api/v1/ledger")
+    kinds = [block["kind"] for block in listing.get("blocks", [])] if isinstance(listing, dict) else []
+    ok = (s_tester == 403 and s_auditor == 200 and result.get("ok") is True and result.get("blocks", 0) >= 4
+          and kinds[:1] == ["genesis"] and "release" in kinds and kinds.count("report") >= 2)
+    return ok, f"тестер {s_tester}; аудитор {s_auditor}: блоків {result.get('blocks')}, ok={result.get('ok')}, " \
+               f"види {kinds}"
+
+
+@case("Підміна (ЛР14): змінений реліз, змінений блок і запис в обхід журналу виявляються; після відновлення — цілий")
+def t_ledger_tamper(h):
+    import hub_ledger
+    findings = []
+    with h.store.write() as conn:
+        original = conn.execute("SELECT record_json FROM releases WHERE version = '1.2.2'").fetchone()["record_json"]
+        conn.execute("UPDATE releases SET record_json = ? WHERE version = '1.2.2'",
+                     (original.replace("125f0ac7", "deadbeef", 1),))
+    with h.store.read() as conn:
+        findings.append(hub_ledger.verify(conn))
+    with h.store.write() as conn:
+        conn.execute("UPDATE releases SET record_json = ? WHERE version = '1.2.2'", (original,))
+        ref = conn.execute("SELECT ref FROM ledger WHERE idx = 1").fetchone()["ref"]
+        conn.execute("UPDATE ledger SET ref = ? WHERE idx = 1", (ref + "x",))
+    with h.store.read() as conn:
+        findings.append(hub_ledger.verify(conn))
+    with h.store.write() as conn:
+        conn.execute("UPDATE ledger SET ref = ? WHERE idx = 1", (ref,))
+        conn.execute("INSERT INTO releases (version, record_json, record_sha256, published_by, published_at) "
+                     "VALUES ('9.9.9', '{}', ?, 'intruder', '2026-01-01T00:00:00Z')",
+                     (hashlib.sha256(b"{}").hexdigest(),))
+    with h.store.read() as conn:
+        findings.append(hub_ledger.verify(conn))
+    with h.store.write() as conn:
+        conn.execute("DELETE FROM releases WHERE version = '9.9.9'")
+    with h.store.read() as conn:
+        final = hub_ledger.verify(conn)
+    ok = all(not f["ok"] for f in findings) and final["ok"]
+    detail = " | ".join(f["problems"][0] for f in findings if f["problems"])
+    return ok, detail + f" | після відновлення: {'цілий' if final['ok'] else final['problems'][:1]}"
+
 # --- кінець переліку перевірок (нові перевірки додавати вище) ---
 
 

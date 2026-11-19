@@ -18,7 +18,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, fields
 
-HUB_VERSION = "0.2.0"          # 0.1.0 — ЛР10–11; 0.2.0 — ЛР12 (журнал, моніторинг)
+HUB_VERSION = "0.3.0"          # 0.1.0 — ЛР10–11; 0.2.0 — ЛР12; 0.3.0 — ЛР13–14 (E2EE звітів, хеш-ланцюг)
 
 DEFAULT_HOST = "127.0.0.1"     # лише локальний інтерфейс: зовнішній доступ — свідоме рішення власника
 DEFAULT_PORT = 8443
@@ -91,6 +91,7 @@ class HubConfig:
     ip_fail_limit: int = 20           # невдач з адреси у вікні до тимчасової відмови (password spraying)
     request_timeout_s: int = 15       # тайм-аут читання запиту (повільні клієнти не тримають потік)
     log_level: str = "info"
+    report_recipient_pub: str = ""    # відкритий ключ отримувача звітів; "" — report_recipient.pub поруч із кодом
 
     # --- шляхи (похідні, не зберігаються в hub.json) -------------------------
     @property
