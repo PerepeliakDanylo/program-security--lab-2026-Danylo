@@ -1,0 +1,11 @@
+{
+  "comment": "Приклад профілю ключового матеріалу для 'hub_backup.py create --profile'. Скопіюйте в теку даних (%USERPROFILE%\\.drs_hub\\backup_profile.json) і впишіть свої шляхи; справжній профіль у репозиторій не класти. Відсутні файли копія позначає як missing, а не падає.",
+  "extra": [
+    {"name": "report_key.pem", "path": "%USERPROFILE%\\.drs_hub_keys\\report_key.pem"},
+    {"name": "release_passport.key", "path": "%USERPROFILE%\\.drs_release\\release_passport.key"},
+    {"name": "drs_release.signing.key", "path": "C:\\PATH\\TO\\REPO\\tools\\drs_release\\drs_release.signing.key"},
+    {"name": "drs_release.accounts.json", "path": "C:\\PATH\\TO\\REPO\\tools\\drs_release\\drs_release.accounts.json"},
+    {"name": "drs_release.accounts.json.key", "path": "C:\\PATH\\TO\\REPO\\tools\\drs_release\\drs_release.accounts.json.key"},
+    {"name": "drs_release.audit.log", "path": "C:\\PATH\\TO\\REPO\\tools\\drs_release\\drs_release.audit.log"}
+  ]
+}

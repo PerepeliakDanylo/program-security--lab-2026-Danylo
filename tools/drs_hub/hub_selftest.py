@@ -613,6 +613,76 @@ def t_ledger_tamper(h):
     detail = " | ".join(f["problems"][0] for f in findings if f["problems"])
     return ok, detail + f" | після відновлення: {'цілий' if final['ok'] else final['problems'][:1]}"
 
+# --- ЛР15–16: резервне копіювання й відновлення ---------------------------------------------
+_BACKUP_PASS = b"selftest-backup-passphrase"
+
+
+@case("Резервна копія (ЛР15): онлайн-знімок, шифрування, SHA-256; відновлення — база, журнал записів і клієнти цілі")
+def t_backup_roundtrip(h):
+    import sqlite3
+    import hub_backup
+    dest = os.path.join(h.tmp.name, "backups")
+    archive = hub_backup.create_backup(h.cfg, dest, _BACKUP_PASS, label="selftest")
+    quick = hub_backup.verify_backup(archive)
+    deep = hub_backup.verify_backup(archive, _BACKUP_PASS)
+    result = hub_backup.restore_backup(archive, os.path.join(h.tmp.name, "restored"), _BACKUP_PASS)
+    conn = sqlite3.connect(os.path.join(h.tmp.name, "restored", "drs_hub.db"))
+    try:
+        tokens = conn.execute("SELECT COUNT(*) FROM tokens").fetchone()[0]
+        clients = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
+    finally:
+        conn.close()
+    h._backup_archive = archive
+    ok = (quick["ok"] and deep["ok"] and result["integrity"] == "ok" and result["ledger_ok"] is True
+          and tokens == 0 and clients == len(h.CLIENTS))
+    return ok, (f"{os.path.basename(archive)}: SHA-256 {quick['sha256_ok']}, вміст ok={deep['ok']}; відновлено "
+                f"{result['files']} файлів за {result['seconds']} с, integrity {result['integrity']}, "
+                f"ланцюг {result['ledger_ok']}, клієнтів {clients}, токенів {tokens}")
+
+
+@case("Резервна копія (ЛР15): змінений байт → SHA-256 і GCM відмовляють; невірна фраза → відмова")
+def t_backup_tamper(h):
+    import shutil
+    import hub_backup
+    archive = h._backup_archive
+    forged = archive.replace(".dhbk", "-forged.dhbk")
+    shutil.copyfile(archive, forged)
+    shutil.copyfile(archive + ".sha256", forged + ".sha256")
+    with open(forged, "r+b") as fh:
+        fh.seek(-100, os.SEEK_END)
+        byte = fh.read(1)
+        fh.seek(-100, os.SEEK_END)
+        fh.write(bytes([byte[0] ^ 0x01]))
+    quick = hub_backup.verify_backup(forged)
+    deep = hub_backup.verify_backup(forged, _BACKUP_PASS)
+    wrong = hub_backup.verify_backup(archive, b"wrong-passphrase-123456")
+    try:
+        hub_backup.restore_backup(forged, os.path.join(h.tmp.name, "restored2"), _BACKUP_PASS)
+        refused = False
+    except hub_backup.BackupError:
+        refused = True
+    ok = not quick["ok"] and not deep["ok"] and not wrong["ok"] and refused
+    return ok, f"змінена копія: {quick['problems'][:1]}; невірна фраза: {wrong['problems'][-1:]}; відновлення → " \
+               f"{'відмова' if refused else 'ВИКОНАНО'}"
+
+
+@case("Відновлення (ЛР15): у теку працюючого сервера (тека заблокована) — відмова")
+def t_backup_lock(h):
+    import hub_backup
+    target = os.path.join(h.tmp.name, "busy")
+    os.makedirs(target, exist_ok=True)
+    lock = hub_config.DataDirLock(os.path.join(target, hub_config.LOCK_NAME))
+    if not lock.acquire():
+        return False, "не вдалося зайняти теку для перевірки"
+    try:
+        hub_backup.restore_backup(h._backup_archive, target, _BACKUP_PASS)
+        refused, reason = False, "відновлено попри блокування"
+    except hub_backup.BackupError as exc:
+        refused, reason = True, str(exc)
+    finally:
+        lock.release()
+    return refused, reason
+
 # --- кінець переліку перевірок (нові перевірки додавати вище) ---
 
 

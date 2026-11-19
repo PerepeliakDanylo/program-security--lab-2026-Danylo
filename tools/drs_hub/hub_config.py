@@ -18,7 +18,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, fields
 
-HUB_VERSION = "0.3.0"          # 0.1.0 — ЛР10–11; 0.2.0 — ЛР12; 0.3.0 — ЛР13–14 (E2EE звітів, хеш-ланцюг)
+HUB_VERSION = "0.4.0"          # 0.1.0 — ЛР10–11; 0.2.0 — ЛР12; 0.3.0 — ЛР13–14; 0.4.0 — ЛР15 (резервні копії)
 
 DEFAULT_HOST = "127.0.0.1"     # лише локальний інтерфейс: зовнішній доступ — свідоме рішення власника
 DEFAULT_PORT = 8443

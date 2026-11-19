@@ -31,6 +31,7 @@ Python (+ `cryptography` для сертифікатів) і клієнт ком
 | `hub_routes_reports.py` | `POST/GET /api/v1/reports` — лише шифротекст і метадані; доступ свій / усі |
 | `hub_ledger.py`, `hub_routes_ledger.py` | хеш-ланцюг записів (релізи, звіти), квитанції, `GET /api/v1/ledger[/verify]`, CLI `verify | head | list` |
 | `report_recipient.pub` | відкритий ключ отримувача звітів (закритий — у супроводжувача, поза репозиторієм) |
+| `hub_backup.py`, `backup_profile.example.json` | повні зашифровані резервні копії, перевірка, відновлення, GFS; приклад профілю ключового матеріалу |
 | `hub_admin.py` | локальне адміністрування: `init`, клієнти, ротація секретів, відкликання токенів |
 | `hub_client.py` | клієнт командного рядка |
 | `hub_selftest.py` | самоперевірка: справжній сервер у тимчасовій теці + сценарії через клієнт |
@@ -129,6 +130,24 @@ python hub_ledger.py verify | head | list            # локально, без 
 ```
 
 Рішення й обмеження — `docs/security/e2ee_ledger.md`.
+
+## Резервні копії й відновлення (ЛР15–16)
+
+Повна зашифрована копія (scrypt + AES-256-GCM, маніфест SHA-256, `<архів>.sha256`): знімок бази без сеансового
+стану (онлайн, сервер може працювати), `hub.json`, TLS, безпекові журнали й ключовий матеріал супроводжувача з
+профілю (приклад — `backup_profile.example.json`; справжній профіль — у теці даних). Відновлення — лише в теку,
+з якою сервер не працює, після повної перевірки; наявна база відкладається, ключі — у `restored_extra\`.
+
+```powershell
+$env:DRS_HUB_BACKUP_PASSPHRASE = "<фраза ≥ 16 символів — з менеджера паролів>"
+python hub_backup.py create --dest D:\DRS_backups --profile "$env:USERPROFILE\.drs_hub\backup_profile.json" --label daily
+python hub_backup.py verify D:\DRS_backups\drs-hub-YYYYMMDD-HHMMSS-daily.dhbk --deep
+python hub_backup.py restore D:\DRS_backups\drs-hub-…dhbk --target "$env:USERPROFILE\.drs_hub" --force   # сервер зупинено
+python hub_backup.py prune --dest D:\DRS_backups --dry-run          # GFS 7/4/6
+```
+
+Стратегія, RPO ≤ 24 год, RTO ≤ 1 год, 3-2-1 — `docs/security/backup_recovery.md`; реліз і підтримка —
+`docs/security/release_support.md`, `SECURITY.md`, `tools/release/release_tools.py`.
 
 ## Відомі обмеження
 
