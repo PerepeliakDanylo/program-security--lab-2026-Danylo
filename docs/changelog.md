@@ -3,13 +3,17 @@
 | | |
 | --- | --- |
 | Назва | Журнал змін — RDR2 Dynamic Reload |
-| Версія | 0.17.0 |
+| Версія | 0.18.0 |
 | Статус | Draft |
 | Останнє оновлення | 2026-11-19 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | [`README.md`](README.md), [`policy/project_policy.md`](policy/project_policy.md), [`internal_spec/contexts_registry.md`](internal_spec/contexts_registry.md) |
 
 Журнал append-only: новіші записи додаються зверху, наявні записи не редагуються й не видаляються. Формат заголовка — `## [YYYY-MM-DD] [ПРЕФІКС] Назва`. Допустимі префікси: `[INIT]`, `[DOCS]`, `[SEC]`, `[FEAT]`, `[FIX]`, `[POLICY]`, `[RELEASE]`.
+
+## [2026-11-19] [RELEASE] DRS maintainer tools 1.0.0
+
+Тег `tools-v1.0.0` = `788eab8`; GitHub Releases: `drs-maintainer-tools-1.0.0.zip` (130463 Б), SHA-256 `09099bf761ad6cafb698a4fc3fbe5e495bc579907aaf817ead4848fffb2f02e9`; SBOM `drs-maintainer-tools-1.0.0.cdx.json`, SHA-256 `f92229e6018e72edd3d4b45c466d66a1135d40df46f8622ad38a878fef8d356e`. Відтворюваність підтверджено (`verify-repro`: дві збірки — однакові SHA-256). Перевірка готовності `release_tools.py check --osv` — без блокерів (cryptography `50.0.2`: відомих вразливостей немає). Мод не публікується на GitHub (SR-02).
 
 ## [2026-11-19] [FEAT] ЛР15–16: резервні копії й відновлення `drs_hub`, перевірка готовності й реліз інструментів
 
