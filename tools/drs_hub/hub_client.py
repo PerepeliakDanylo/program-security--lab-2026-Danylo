@@ -33,7 +33,7 @@ from urllib.parse import quote_plus, urlencode, urlsplit
 
 import hub_e2ee
 
-USER_AGENT = "drs-hub-client/0.1.0"
+USER_AGENT = "drs-hub-client/1.0.0"
 TOKEN_REFRESH_MARGIN_S = 30
 
 
