@@ -24,7 +24,9 @@ Python (+ `cryptography` для сертифікатів) і клієнт ком
 | `hub_store.py` | SQLite: клієнти, токени, лічильники невдач, релізи |
 | `hub_config.py` | несекретні налаштування (`hub.json`), шляхи, блокування теки даних |
 | `hub_tls.py` | власний CA (ключ CA не зберігається) і сертифікат сервера для `localhost`/`127.0.0.1` |
-| `hub_log.py` | журнал сервера (`logs/` теки даних) |
+| `hub_log.py` | журнал JSON Lines (UTC, `request_id`), безпековий журнал із ланцюгом SHA-256, редагування секретів, ротація, показники й сповіщення |
+| `hub_routes_ops.py` | `GET /api/v1/metrics` (скоуп `metrics:read`) |
+| `hub_monitor.py` | аналіз журналів (`summary`, `trace`, `verify`) і опитування показників (`metrics --watch`) |
 | `hub_admin.py` | локальне адміністрування: `init`, клієнти, ротація секретів, відкликання токенів |
 | `hub_client.py` | клієнт командного рядка |
 | `hub_selftest.py` | самоперевірка: справжній сервер у тимчасовій теці + сценарії через клієнт |
@@ -71,6 +73,29 @@ python hub_client.py releases
 
 Тека даних і файли секретів **ніколи** не лежать у репозиторії: `hub_admin.py init`, `hub_server.py`
 і `--secret-out` відмовляють, якщо шлях усередині робочого дерева git.
+
+## Журнали й моніторинг (ЛР12)
+
+| Файл (`<тека даних>\logs\`) | Вміст | Зберігання |
+|---|---|---|
+| `hub-YYYY-MM-DD.jsonl` | усі події (JSON Lines, UTC) | 14 діб |
+| `security-YYYY-MM-DD.jsonl` | безпекові події з ланцюгом SHA-256 (`prev`, `chain`) | 90 діб |
+| `hub-admin-…`, `security-admin-…` | те саме від `hub_admin.py` | 14 / 90 діб |
+
+Кожна відповідь має `X-Request-ID`; той самий `request_id` — у всіх подіях запиту. Секретів, токенів і
+тіл запитів у журналі немає (лише відбиток токена `token_fp`). Каталог подій, пороги сповіщень і
+рішення — `docs/security/logging_monitoring.md`.
+
+```powershell
+python hub_monitor.py summary                     # зведення за сьогодні (UTC)
+python hub_monitor.py trace <request_id>          # усі події одного запиту
+python hub_monitor.py verify                      # JSON, відсутність секретів, ланцюг SHA-256
+python hub_monitor.py metrics --client-id auditor-demo --secret-file "…\auditor-demo.secret" --watch 3 --interval 10
+```
+
+`GET /api/v1/metrics` (скоуп `metrics:read`) — показники процесу й стан бази; сповіщення
+`alert.raised`: `auth.bruteforce_ip`, `auth.lockout`, `authz.denied_burst`, `http.scan_404`,
+`http.error_burst`, `tls.handshake_burst`.
 
 ## Відомі обмеження
 

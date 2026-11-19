@@ -48,7 +48,7 @@ import hub_log
 from hub_config import DataDirLock, HubConfig, HubConfigError
 from hub_store import HubStore
 
-FEATURES: tuple[str, ...] = ("hub_routes_core",)
+FEATURES: tuple[str, ...] = ("hub_routes_core", "hub_routes_ops")
 
 _DRAIN_LIMIT = 8 * 1024 * 1024     # завелике тіло дочитується (до цієї межі), щоб клієнт отримав 413
 

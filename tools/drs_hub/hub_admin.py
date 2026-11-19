@@ -23,13 +23,16 @@ auditor (скоупи — hub_auth.ROLE_SCOPES).
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
+import platform
 import sqlite3
 import sys
 import time
 
 import hub_auth
 import hub_config
+import hub_log
 import hub_server
 import hub_tls
 from hub_config import DataDirLock, HubConfigError
@@ -193,7 +196,16 @@ def main(argv: list[str] | None = None) -> int:
             "rotate-secret": cmd_rotate_secret, "revoke-tokens": cmd_revoke_tokens,
             "show-ca": cmd_show_ca, "status": cmd_status,
         }
-        return handlers[args.command](cfg, args)
+        audit = not hub_config.path_inside_git_worktree(cfg.data_dir)
+        if audit:
+            hub_log.setup(cfg, console=False, component="drs_hub.admin")
+        code = handlers[args.command](cfg, args)
+        if audit:
+            hub_log.event("info" if code == 0 else "warning", "admin.command", command=args.command,
+                          target=getattr(args, "client_id", None), role=getattr(args, "role", None),
+                          result=code, actor=getpass.getuser(), host_name=platform.node())
+            hub_log.shutdown()
+        return code
     except (HubConfigError, OSError) as exc:
         print(f"Помилка: {exc}")
         return 2

@@ -363,6 +363,90 @@ def t_error_format(h):
     return ok, f"HTTP {status} {payload.get('error')}, request_id {payload.get('request_id')}"
 
 
+# --- ЛР12: журнал, кореляція, показники, сповіщення, цілісність -----------------------
+def _read_jsonl(h, prefix: str) -> list[dict]:
+    records = []
+    for name in sorted(os.listdir(h.cfg.log_dir)):
+        if name.startswith(prefix + "-") and name.endswith(".jsonl") and name[len(prefix) + 1:len(prefix) + 2].isdigit():
+            with open(os.path.join(h.cfg.log_dir, name), "r", encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue          # рядок, який сервер саме дописує
+    return records
+
+
+@case("Журнал (ЛР12): JSON Lines; request_id відповіді є в записі доступу й у події обробника")
+def t_log_correlation(h):
+    client = h.client("st-maintainer")
+    status, headers, payload = h.raw("POST", "/oauth/token", body=b"grant_type=client_credentials",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded",
+                                              "Authorization": client._basic_header()})
+    h.tokens.append(payload.get("access_token", ""))
+    rid = headers.get("x-request-id")
+    events: list[str] = []
+    for _ in range(20):                       # запис доступу пишеться одразу після відповіді
+        events = [r["event"] for r in _read_jsonl(h, "hub") if r.get("request_id") == rid]
+        if "http.access" in events and "auth.token_issued" in events:
+            break
+        time.sleep(0.1)
+    sample = next((r for r in _read_jsonl(h, "hub") if r.get("request_id") == rid), {})
+    ok = (status == 200 and "http.access" in events and "auth.token_issued" in events
+          and str(sample.get("ts", "")).endswith("Z"))
+    return ok, f"request_id {rid}: {', '.join(events)}; ts {sample.get('ts')}"
+
+
+@case("Показники (ЛР12): /api/v1/metrics — тестер 403, аудитор 200 з лічильниками й станом бази")
+def t_metrics(h):
+    s1, _ = h.client("st-tester").call("GET", "/api/v1/metrics")
+    s2, snap = h.client("st-auditor").call("GET", "/api/v1/metrics")
+    snap = snap if isinstance(snap, dict) else {}
+    ok = (s1 == 403 and s2 == 200 and snap.get("requests_total", 0) > 0 and "p95" in snap.get("latency_ms", {})
+          and snap.get("db", {}).get("integrity") == "ok")
+    return ok, (f"тестер → {s1}; аудитор → {s2}: запитів {snap.get('requests_total')}, відмови {snap.get('denied')}, "
+                f"невдач автентифікації {snap.get('auth_failures_total')}, сповіщень {snap.get('alerts_total')}")
+
+
+@case("Сповіщення (ЛР12): блокування перебору → alert.raised auth.lockout у безпековому журналі")
+def t_alert_lockout(h):
+    alerts = [r for r in _read_jsonl(h, "security") if r.get("event") == "alert.raised"]
+    hit = [r for r in alerts if r.get("rule") == "auth.lockout" and r.get("subject") == "st-lockme"]
+    return bool(hit), f"сповіщень у security-журналі: {len(alerts)}; auth.lockout для st-lockme: {len(hit)}"
+
+
+@case("Цілісність (ЛР12): ланцюг SHA-256 безпекового журналу цілий; змінений рядок виявляється")
+def t_log_chain(h):
+    time.sleep(0.3)                          # дати серверу дописати події попередніх запитів
+    names = sorted(n for n in os.listdir(h.cfg.log_dir) if n.startswith("security-") and n.endswith(".jsonl")
+                   and n[9:10].isdigit())
+    path = os.path.join(h.cfg.log_dir, names[-1])
+    ok_before, problems_before, count = hub_log.verify_log_file(path)
+    with open(path, "r", encoding="utf-8") as fh:
+        lines = [line for line in fh if line.strip()]
+    index = len(lines) // 2
+    forged = json.loads(lines[index])
+    forged["ip"] = "203.0.113.66"            # «підчистити» адресу в одному записі
+    lines[index] = json.dumps(forged, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    copy = os.path.join(h.tmp.name, "security-forged.jsonl")
+    with open(copy, "w", encoding="utf-8", newline="\n") as fh:
+        fh.writelines(lines)
+    ok_after, problems_after, _ = hub_log.verify_log_file(copy)
+    ok = ok_before and not ok_after and f"рядок {index + 1}" in problems_after[0]
+    return ok, (f"{count} записів: {'цілий' if ok_before else problems_before[:1]}; після зміни рядка "
+                f"{index + 1}: {problems_after[0] if problems_after else 'НЕ виявлено'}")
+
+
+@case("Редагування (ЛР12): секрет у полі події й «Bearer …» у тексті замінюються на [REDACTED]")
+def t_redaction(h):
+    rec = hub_log.build_record(time.time(), "INFO", "test.redact",
+                               {"client_secret": "dhs_" + "s" * 30, "detail": "Authorization: Bearer dha_" + "x" * 30,
+                                "note": "line1\nline2"})
+    line = json.dumps(rec, ensure_ascii=False)
+    ok = (rec["client_secret"] == "[REDACTED]" and "dha_" not in rec["detail"] and "dhs_" not in line
+          and "\n" not in line)
+    return ok, f"client_secret → {rec['client_secret']}; detail → {rec['detail']}"
+
 # --- кінець переліку перевірок (нові перевірки додавати вище) ---
 
 
