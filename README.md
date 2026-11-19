@@ -66,6 +66,7 @@ cmake --build build --config Release
 | Те, що знадобилося, але не підтверджене | [`docs/UNVERIFIED.md`](docs/UNVERIFIED.md) |
 | Приймальний чек-лист | [`docs/TESTPLAN.md`](docs/TESTPLAN.md) |
 | Журнал релізів для гравця | [`CHANGELOG.md`](CHANGELOG.md) |
+| Підтримувані версії й повідомлення про вразливості | [`SECURITY.md`](SECURITY.md) |
 
 ## Ліцензія
 
