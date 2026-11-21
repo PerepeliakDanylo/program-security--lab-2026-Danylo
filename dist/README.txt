@@ -1,5 +1,5 @@
 ================================================================================
- RDR2 DYNAMIC RELOAD  1.2.2
+ RDR2 DYNAMIC RELOAD  1.2.3
  DynamicReloadSpeed.asi
 ================================================================================
 
@@ -83,6 +83,11 @@ INSTALL
   Nothing is copied into the game's own archives, and no game file is
   modified, renamed or replaced.
 
+  Updating from 1.2.2 or older and keeping your own DynamicReloadSpeed.ini?
+  It still says PlayerShooting = 1 (the old default), so any shot you fire -
+  also a test shot into the air - starts combat. Set PlayerShooting = 0 under
+  [Signals] for the 1.2.3 behaviour, or use the new DynamicReloadSpeed.ini.
+
 
 WHAT COUNTS AS A FIGHT
 
@@ -95,13 +100,29 @@ WHAT COUNTS AS A FIGHT
     - you fired at a PERSON you were aiming at or locked on to
       (AttackingHumans; shooting a deer does not count)
     - the law is actively after you
-    - with PlayerShooting = 1 (default): any shot at all
+    - only with PlayerShooting = 1 (off by default since 1.2.3): any shot
 
-  While a fight is on, every shot you fire keeps it on (ShootingSustainsCombat),
-  so a cooldown never kicks in between two shots: a shot counts for two
-  seconds, and the cooldown starts two seconds after your last one. Hunters who
-  want the slow reload while shooting game set PlayerShooting = 0 - shots at
-  people still start a fight.
+  A shot into the air or at game does not start a fight, so a test shot
+  followed by a reload shows the slow speed, and hunting stays slow. While a
+  fight is on, every shot you fire keeps it on (ShootingSustainsCombat), so a
+  cooldown never kicks in between two shots: a shot counts for two seconds,
+  and the cooldown starts two seconds after your last one. Set
+  PlayerShooting = 1 if you want every shot of yours to count as a fight.
+
+
+HOW TO SEE IT WORKING (ONE MINUTE)
+
+  1. In DynamicReloadSpeed.ini, section [Debug], set OnScreenState = 1 and
+     start the game (or press F9 if it is running). The top-left corner shows
+     the state, and below it the gun in your hands with its reload rate.
+  2. Out in the wild (shots in a town can bring the law), wait until it says
+     CALM, fire a few rounds into the air and reload: that is the slow,
+     out-of-combat speed.
+  3. Press F8 (forced COMBAT) and reload again: stock speed. Press F8 again to
+     stop forcing it; CALM returns CooldownSeconds later.
+
+  If the state says COMBAT or COOLDOWN while nobody is fighting you, the log
+  line "CALM -> COMBAT (...)" names the signal that started it.
 
 
 HOW TO CONFIRM IT LOADED
@@ -219,6 +240,10 @@ THE TWO SETTINGS MOST PEOPLE WILL WANT
      stock speed in a fight. The presets matter for the weapons your file does
      not slow.
 
+     Munitions users: a matching preset (munitions.ini) is an optional file on
+     the mod page. It slows Munitions' own reload speeds instead of replacing
+     them and also covers Munitions' extra guns.
+
 
 AFTER A GAME UPDATE
 
@@ -299,8 +324,18 @@ TROUBLESHOOTING
   "resolver failed: ..." / "the mod will do nothing this session"
   (the log shows the plugin starting, but no "plan:" lines)
       The mod could not confirm where the reload fields are and switched
-      itself off on purpose. The game is untouched. Report the WHOLE log -
-      the resolver lines in it are exactly what is needed to diagnose it.
+      itself off on purpose. The game is untouched. The most common cause is
+      a weapons.ymt (or a weapon mod) that changes AnimReloadRate for most
+      guns: put that file's values into [Vanilla] (one line per weapon, e.g.
+      WEAPON_REVOLVER_CATTLEMAN = 0.80) and restart the game - the log's
+      "hint:" line says the same. Otherwise report the WHOLE log - the
+      resolver lines in it are exactly what is needed to diagnose it.
+
+  "hint: your own shot started COMBAT (PlayerShooting = 1)"
+      Your INI still has PlayerShooting = 1 (the default before 1.2.3), so a
+      shot into the air or at game started combat and the reload right after
+      it ran at stock speed. Set PlayerShooting = 0 under [Signals] to keep
+      such shots calm; shots at people still start a fight.
 
   "no weapon-info class could be confirmed"
       The mod could not recognise the weapon structure itself and fell back

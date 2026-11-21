@@ -3,9 +3,9 @@
 | | |
 | --- | --- |
 | Назва | Опис архітектури — RDR2 Dynamic Reload |
-| Версія | 0.4.0 |
+| Версія | 0.4.1 |
 | Статус | Draft |
-| Останнє оновлення | 2026-11-19 |
+| Останнє оновлення | 2026-11-21 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | [`../specification/overview.md`](../specification/overview.md), [`../specification/requirements.md`](../specification/requirements.md), [`dfd.md`](dfd.md), [`../internal_spec/contexts_registry.md`](../internal_spec/contexts_registry.md), [`../policy/project_policy.md`](../policy/project_policy.md) |
 
@@ -13,10 +13,11 @@
 
 Документ описує архітектуру системи `RDR2 Dynamic Reload` за ISO/IEC/IEEE 42010: фіксує зацікавлені сторони та їхні інтереси, набір представлень, що ці інтереси адресують, і архітектурні рішення разом із розглянутими альтернативами.
 
-Об'єкт опису — два компоненти одного репозиторію:
+Об'єкт опису — компоненти одного репозиторію:
 
 - `ymt-tweaker` — офлайн-препроцесор `weapons.ymt` (Python 3.8+, тільки стандартна бібліотека);
-- `DynamicReloadSpeed.asi` — рантайм-плагін (C++17/20, x64, MSVC `/MT`, ScriptHookRDR2 SDK).
+- `DynamicReloadSpeed.asi` — рантайм-плагін (C++17/20, x64, MSVC `/MT`, ScriptHookRDR2 SDK);
+- `drs-hub` (`tools/drs_hub`) — службовий HTTPS-сервер супроводжувача (AD-14, [`client_server.md`](client_server.md)); у реліз мода не входить, гра з ним не з'єднується.
 
 Архітектура гри, формат RPF-архівів, внутрішня будова ScriptHookRDR2 та інструменти видобування метафайлів до предмета опису не належать і розглядаються як зовнішні обмеження.
 
@@ -418,3 +419,4 @@ flowchart TB
 | NFR-01 – NFR-06 | AD-08, AD-12 |
 | NFR-07 – NFR-13 | AD-02, AD-03, AD-13, Розгортання |
 | NFR-14 – NFR-18 | AD-03, AD-06, Розділ «Архітектурні ризики» |
+| FR-88 – FR-106 (`drs-hub`, реліз інструментів) | AD-14, [`client_server.md`](client_server.md) |

@@ -9,6 +9,49 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Project documentation is kept in Ukrainian; this file, the shipped `README.txt`, the presets and
 the plugin's log are in English.
 
+## [1.2.3] - unreleased
+
+Usability release after player feedback on 1.2.2. A player on a Munitions build (about 150
+scripts) reported several times that the mod did nothing, although both of his logs showed every
+gun switching. He tested by firing a shot into the air and reloading right away, and with 1.2.2's
+default `PlayerShooting = 1` that shot switched to COMBAT, so the reload ran at combat speed. Once
+he watched the on-screen state, the slow CALM reload was there ("it worked now finally"). Another
+player had switched `PlayerShooting` off for the same reason and posted that tip on the mod page.
+No INI key was added or renamed, and no change touches how weapon data is found or written; an
+INI from 1.2.2 works unchanged - and keeps its own `PlayerShooting` value.
+
+### Changed
+
+- **`PlayerShooting` is off by default** - in the built-in defaults, the shipped
+  `DynamicReloadSpeed.ini`, the three presets and the Munitions preset. A shot into the air or at
+  game no longer starts COMBAT, so the first test after installing shows the slow reload, and
+  hunting stays slow. Real fights still switch at once: a shot at a person (`AttackingHumans`), an
+  enemy near you (`HostileNearby`), damage (`RecentDamage`), a law pursuit (`WantedByLaw`) or a
+  fist fight (`Melee`); while a fight is on, your own shots keep it on (`ShootingSustainsCombat`).
+  Set `PlayerShooting = 1` for the old behaviour. An INI kept from 1.2.2 or older still says
+  `PlayerShooting = 1` - set it to 0 there, or take the new file.
+- `README.txt`: "How to see it working" - a one-minute check with `OnScreenState = 1` and `F8`;
+  the fight list and the updating note follow the new default; a pointer to the Munitions preset.
+- The Munitions preset is published as an optional file on the mod page (it was a link in the
+  Posts tab), with its status: tested by a player on a Munitions build.
+
+### Added
+
+- Two log hints. Once per session, when a shot of yours alone started COMBAT (only possible with
+  `PlayerShooting = 1`): `hint: your own shot started COMBAT (PlayerShooting = 1) ...`. When the
+  start-up resolver gives up: `hint: if your weapons.ymt or a weapon mod changes AnimReloadRate
+  for most guns, put that file's values in [Vanilla] ...` - the usual cause on players' machines,
+  written where a player looks first, at the end of the log.
+
+### Fixed
+
+- Guns added by weapon mods whose game label is in lower case (Munitions:
+  `weapon_revolver_army`) are named like every other gun: the log shows
+  `unlisted gun: WEAPON_REVOLVER_ARMY (label weapon_revolver_army, name verified)` instead of
+  `name not verified`, the on-screen line drops the `WEAPON_` prefix, and the mounted-gun filter
+  also recognises lower-case labels. Which guns are switched, and how, did not change: INI
+  sections were always matched regardless of letter case.
+
 ## [1.2.2] - 2026-11-17
 
 Start-up detection fix for heavily modded games, found from a player's log on 1.2.1 (NexusMods
