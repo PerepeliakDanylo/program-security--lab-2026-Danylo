@@ -8,6 +8,8 @@
 | Maintainer tools (`tools/drs_release`, `tools/drs_hub`) | latest **1.0.x** | GitHub Releases of this repository, tags `tools-v<version>` |
 | Older versions | not supported — please update | — |
 
+After a new MINOR release of the maintainer tools, the previous MINOR line receives security fixes for 3 more months.
+
 Game build tested: RDR2 PC `1.0.1491.50`. Later builds are handled on a best-effort basis: the plugin
 re-discovers its targets at every start and stays inactive (game untouched) when it cannot confirm them.
 
