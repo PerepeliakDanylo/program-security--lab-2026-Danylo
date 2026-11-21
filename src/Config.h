@@ -15,6 +15,8 @@
 //   [Memory]  IncludeUnlistedGuns, PatchSectionedReload
 // MaxPedsScanned keeps its name but now means "how many of the NEAREST peds in
 // ThreatRadius are checked"; the ped list itself is always read in full.
+// Default changed in 1.2.3 (no key added or renamed): [Signals] PlayerShooting
+// is 0. An INI that sets it keeps its own value.
 //
 // No dependency on the ScriptHookRDR2 SDK.
 
@@ -76,7 +78,11 @@ struct GeneralSettings
 
 struct SignalSettings
 {
-    bool playerShooting         = true;
+    // 1.2.3: off by default. With 1.2.2's default (on) a test shot into the air
+    // started COMBAT, so the reload right after it ran at combat speed and players
+    // reported "it does nothing". Real fights still start COMBAT at once through
+    // the signals below, and in a fight the player's own shots keep it on.
+    bool playerShooting         = false;
     bool playerAiming           = true;
     bool melee                  = true;
     bool recentDamage           = true;

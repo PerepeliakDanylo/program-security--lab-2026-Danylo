@@ -97,6 +97,8 @@ private:
     int  m_consecutiveErrors   = 0;
     bool m_forcedCombat        = false;
     bool m_onlineNotified      = false;
+    // 1.2.3: the "your own shot started COMBAT" hint is logged once per session.
+    bool m_shotHintLogged      = false;
 
     // The weapons in the player's hands (1.2; the left hand since 1.2.1): what the
     // overlay's second and third lines and the "weapon in (left) hand" log lines

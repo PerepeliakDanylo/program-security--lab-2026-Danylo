@@ -22,7 +22,7 @@ namespace drs {
 
 namespace {
 
-constexpr const char*   kPluginVersion  = "1.2.2";
+constexpr const char*   kPluginVersion  = "1.2.3";
 constexpr int           kMaxTickErrors  = 10;
 
 // Start-up timing (1.1). Weapon data is parsed at game boot, long before any
@@ -42,13 +42,31 @@ bool startsWith(const char* text, const char* prefix)
     return text != nullptr && std::strncmp(text, prefix, std::strlen(prefix)) == 0;
 }
 
+// 1.2.3: the game's labels are not always upper case. A gun that a weapon mod
+// registers can carry its internal name in lower case (Munitions:
+// "weapon_revolver_army"); 1.2.2 compared the prefixes case-sensitively and so
+// neither normalised nor verified such a name (UNVERIFIED.md U-06).
+bool startsWithNoCase(const char* text, const char* prefix)
+{
+    return text != nullptr && _strnicmp(text, prefix, std::strlen(prefix)) == 0;
+}
+
+std::string upperCopy(const char* text);   // defined below
+
 // Mounted and emplaced guns: their "reload" is a crew or cool-down animation, not
 // the player's hands. Checked on the game's own label in addition to the hash
 // list in WeaponTable.h, because the exact turret names are not all known.
+// 1.2.3: checked on an upper-case copy, so a lower-case label is caught as well.
 bool labelLooksMounted(const char* label)
 {
-    return std::strstr(label, "TURRET") != nullptr || std::strstr(label, "CANNON") != nullptr ||
-           std::strstr(label, "GATLING") != nullptr || std::strstr(label, "MAXIM") != nullptr;
+    if (label == nullptr)
+    {
+        return false;
+    }
+    const std::string upper = upperCopy(label);
+    const char*       text  = upper.c_str();
+    return std::strstr(text, "TURRET") != nullptr || std::strstr(text, "CANNON") != nullptr ||
+           std::strstr(text, "GATLING") != nullptr || std::strstr(text, "MAXIM") != nullptr;
 }
 
 std::string upperCopy(const char* text)
@@ -67,18 +85,19 @@ std::string upperCopy(const char* text)
 // Either way it is used to look up an INI section by prefix, so an unknown
 // double-action revolver still gets the double-action section. Some weapons
 // (1.2.0 logs: WEAPON_RAMMED_BY_CAR) carry their internal name itself as the
-// label; that is hashed back too (1.2.1).
+// label; that is hashed back too (1.2.1). Both prefixes are matched in any letter
+// case, and the name is always upper case, as in the INI (1.2.3).
 std::string nameFromLabel(std::uint32_t hash, const char* label, bool& verified)
 {
     verified = false;
-    if (startsWith(label, "WNS_") && label[4] != '\0')
+    if (startsWithNoCase(label, "WNS_") && label[4] != '\0')
     {
         std::string name = "WEAPON_";
         name += upperCopy(label + 4);
         verified = (joaat(name.c_str()) == hash);   // joaat lower-cases by itself
         return name;
     }
-    if (startsWith(label, "WEAPON_") && label[7] != '\0')
+    if (startsWithNoCase(label, "WEAPON_") && label[7] != '\0')
     {
         std::string name = upperCopy(label);
         verified = (joaat(name.c_str()) == hash);
@@ -305,6 +324,14 @@ bool Script::initialise()
                                              ? "unexpected exception in the resolver"
                                              : m_patcher.failureReason().c_str());
         DRS_ERROR("the mod will do nothing this session; the game is untouched");
+        // 1.2.3: the remedy for the usual cause on a player's machine, where the
+        // player reads first - the end of the log. A weapons.ymt (or a weapon mod)
+        // that changes AnimReloadRate for most guns hides both the stock 1.00 / 1.30
+        // values and the INI's Calm values the field is recognised by.
+        DRS_INFO("hint: if your weapons.ymt or a weapon mod changes AnimReloadRate for most "
+                 "guns, put that file's values in [Vanilla] of DynamicReloadSpeed.ini (one line "
+                 "per weapon, e.g. WEAPON_REVOLVER_CATTLEMAN = 0.80) and restart the game. "
+                 "Otherwise, report this whole log");
         m_state = ModState::DisabledPermanent;
         return false;
     }
@@ -874,7 +901,28 @@ void Script::tick(std::uint64_t nowMs)
         switch (m_state)
         {
         case ModState::Calm:
-            if (combatNow) { enterState(ModState::Combat, nowMs, why()); }
+            if (combatNow)
+            {
+                enterState(ModState::Combat, nowMs, why());
+
+                // 1.2.3: the cause behind most "it does nothing" reports. With
+                // PlayerShooting = 1 (the default up to 1.2.2, still in many INIs) a
+                // test shot into the air starts COMBAT, so the reload right after it
+                // runs at combat speed. Said once per session, and only when that
+                // shot alone started the fight.
+                const bool shotAlone = signals.shooting && !signals.attacking &&
+                                       !signals.melee && !signals.recentDamage &&
+                                       !signals.hostileNearby && !signals.wanted &&
+                                       !signals.deadEye;
+                if (shotAlone && !m_forcedCombat && !m_shotHintLogged)
+                {
+                    m_shotHintLogged = true;
+                    DRS_INFO("hint: your own shot started COMBAT (PlayerShooting = 1), so a reload "
+                             "right after it runs at combat speed until the cooldown ends. To keep "
+                             "test shots and hunting in CALM, set PlayerShooting = 0 in [Signals]: "
+                             "shots at people still start a fight (AttackingHumans)");
+                }
+            }
             break;
 
         case ModState::Combat:

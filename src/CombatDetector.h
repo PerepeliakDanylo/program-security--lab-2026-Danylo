@@ -20,6 +20,9 @@
 //     second, so most shots fell between two questions.
 //   * (1.2.1) A shot counts for two seconds, not for one poll: 1.2.0 flipped
 //     COMBAT -> COOLDOWN between two shots and back on the next one.
+//   * (1.2.3) PlayerShooting is 0 by default, so any other shot - into the air,
+//     at game - does not start a fight. With 1.2.2's default (1) a test shot did,
+//     and the reload right after it ran at combat speed.
 
 #pragma once
 
