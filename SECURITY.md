@@ -4,7 +4,7 @@
 
 | Component | Supported | Where it is published |
 |---|---|---|
-| `DynamicReloadSpeed.asi` (mod) | latest **1.2.x** only (currently 1.2.2) | NexusMods page of Dynamic Reload Speed (author RedziYT) — the only canonical source |
+| `DynamicReloadSpeed.asi` (mod) | latest **1.2.x** only (currently 1.2.3) | NexusMods page of Dynamic Reload Speed (author RedziYT) — the only canonical source |
 | Maintainer tools (`tools/drs_release`, `tools/drs_hub`) | latest **1.0.x** | GitHub Releases of this repository, tags `tools-v<version>` |
 | Older versions | not supported — please update | — |
 

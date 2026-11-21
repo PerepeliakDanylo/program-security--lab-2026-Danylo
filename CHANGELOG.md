@@ -9,7 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Project documentation is kept in Ukrainian; this file, the shipped `README.txt`, the presets and
 the plugin's log are in English.
 
-## [1.2.3] - unreleased
+## [1.2.3] - 2026-11-21
 
 Usability release after player feedback on 1.2.2. A player on a Munitions build (about 150
 scripts) reported several times that the mod did nothing, although both of his logs showed every
