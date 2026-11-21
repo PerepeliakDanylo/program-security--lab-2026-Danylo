@@ -3,13 +3,27 @@
 | | |
 | --- | --- |
 | Назва | Журнал змін — RDR2 Dynamic Reload |
-| Версія | 0.20.0 |
+| Версія | 0.21.0 |
 | Статус | Draft |
 | Останнє оновлення | 2026-11-21 |
 | Власник | Данило Перепеляк |
 | Пов'язані документи | [`README.md`](README.md), [`policy/project_policy.md`](policy/project_policy.md), [`internal_spec/contexts_registry.md`](internal_spec/contexts_registry.md) |
 
 Журнал append-only: новіші записи додаються зверху, наявні записи не редагуються й не видаляються. Формат заголовка — `## [YYYY-MM-DD] [ПРЕФІКС] Назва`. Допустимі префікси: `[INIT]`, `[DOCS]`, `[SEC]`, `[FEAT]`, `[FIX]`, `[POLICY]`, `[RELEASE]`.
+
+## [2026-11-21] [RELEASE] DynamicReloadSpeed 1.2.3
+
+Опубліковано на NexusMods (автор RedziYT) архів `DynamicReloadSpeed-1.2.3.zip` (216169 Б), зібраний
+командою пакування з тегованого дерева `v1.2.3` = `6212fed1e4a724b02cff886e6d4ded859c9857d1` (SR-03), і optional-файл
+`DynamicReloadSpeed-1.2.3-Munitions-preset.zip` (3239 Б) з `dist/optional/munitions.ini` того самого коміту:
+
+- SHA-256 архіву: `e40808e82c9a8c45e6adb1f31ea81451bb6ddd58f9439376358e2f6b55c91c69`
+- SHA-256 `DynamicReloadSpeed.asi` (374272 Б): `8a5ae47e31c571cb3ed572308782744342ceed66787cc6ff1b202a89723300c9`
+- SHA-256 optional-архіву Munitions: `091fb47f17a230f9498f6250916c5f207dba598aa9c2190e8e90828a10c7c492`
+- Приймальна перевірка (обсяг PATCH, політика §12): група L — AT-98 – AT-102 ok у грі розробника на
+  постачальному INI (два запуски); AT-103 чекає лога гравця з модом зброї; група F для архівів — AT-53,
+  AT-56, AT-57 ok.
+- Суми SDK, з якими зібрано, — `BUILD.md` §2.4 (SR-06).
 
 ## [2026-11-21] [SEC] Документи безпеки після ЛР10–16: канали повідомлень, винятки, вимоги й загрози інструментів
 
